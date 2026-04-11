@@ -34,9 +34,9 @@ t.test(df_ndvi_wide_drop_na$`1000`, df_ndvi_wide_drop_na$`2000`, paired = TRUE)
 # NDVI differs between buffer sizes 1000 and 2000
 
 ## Block ####
-block <- read.csv(here::here("data", "saep_block20", "block20_with_area.csv"))
+block_df <- read.csv(here::here("data", "saep_block20", "block20_with_area.csv"))
 
-block_df <- block %>%
+block_df <- block_df %>%
   select(GEOID20, area_ha)
 
 # Add area to ndvi dataframe
@@ -50,4 +50,11 @@ ndvi_block2 <- ndvi_block2 %>%
     HU_density  = HU  / area_ha
   )
 
+# examine the distribution
+hist(ndvi_block2$POP_density)
+hist(log(ndvi_block2$POP_density))
 hist(ndvi_block2$HU_density)
+hist(log(ndvi_block2$HU_density))
+
+# output
+write.csv(ndvi_block2, here::here("data", "block_final.csv"), row.names = FALSE)

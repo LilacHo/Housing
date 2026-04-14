@@ -501,10 +501,12 @@ fig9 <- all_data %>%
                     name = "Season",
                     labels = c("Dormant", "Growing")) +
   labs(
-    title = "Distribution of Pseudo-Residual Change by Buffer and Season",
+    title = "Distribution of Index Change by Buffer and Season",
+    # title = "Distribution of Pseudo-Residual Change by Buffer and Season",
     subtitle = "Positive = brightening; Negative = dimming (relative to 2010 baseline)",
     x = "Buffer (m)",
-    y = "Index Change (2020 pseudo-residual - 2010 residual)"
+    # y = "Index Change (2020 pseudo-residual - 2010 residual)"
+    y = "Index Change"
   ) +
   theme_lambert
 
@@ -550,8 +552,9 @@ fig10 <- ggplot(ci_data,
                      name = "Season",
                      labels = c("Dormant", "Growing")) +
   labs(
-    title = "Mean Change in Pseudo-Residual Index (95% CI)",
-    subtitle = "Comparing brightening/dimming across buffer sizes and seasons",
+    # title = "Mean Change in Pseudo-Residual Index (95% CI)",
+    title = "Mean Change in Index (95% CI)",
+    # subtitle = "Comparing brightening/dimming across buffer sizes and seasons",
     x = "Buffer",
     y = "Mean Index Change"
   ) +

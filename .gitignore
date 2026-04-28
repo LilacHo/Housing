@@ -1,0 +1,32 @@
+# Ignore ALL hidden files and folders
+
+.*
+
+# --- Exceptions (keep these) ---
+
+!.gitignore
+!*.Rproj
+!.RData
+
+# --- R session / user files (explicit for clarity) ---
+
+.Rhistory
+.Ruserdata
+.Rproj.user/
+
+# --- R temporary/output files ---
+
+*.Rtmp
+*.Rout
+*.Rout.save
+
+# --- Package/build artifacts ---
+
+*.tar.gz
+*.tgz
+*.zip
+
+# --- OS files ---
+
+.DS_Store
+Thumbs.db

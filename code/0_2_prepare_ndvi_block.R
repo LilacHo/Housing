@@ -1,7 +1,7 @@
 library(here)
 library(tidyverse)
 
-here::i_am("code/0_2_prepare_ndvi.R")
+here::i_am("code/0_2_prepare_ndvi_block.R")
 
 ## NDVI investigation ####
 ndvi_block <- read.csv(here::here("data","ndvi_block_final.csv"))

@@ -1,0 +1,370 @@
+---
+title: "block ndvi"
+author: "Lilac Hong"
+date: "2026-04-28"
+output: 
+  html_document:
+    toc: yes
+    toc_float:
+      collapsed: true
+---
+
+```{r include = FALSE, message=FALSE, warning=FALSE}
+library(here)
+library(tidyverse)
+library(ggplot2)
+
+here::i_am("code/1_2_block_ndvi.Rmd")
+```
+
+
+## Methods
+This residual analysis was adapted from Lambert et al. 2025.
+
+```{r echo=FALSE}
+# -----------------------------
+# 1. READ DATA
+# -----------------------------
+ndvi_block2 <- read.csv(here::here("data", "block_final.csv"))
+
+# -----------------------------
+# 2. BASIC CLEANING
+# -----------------------------
+df <- ndvi_block2 %>%
+  mutate(
+    across(all_of(c("NDVI", "HU_density")), as.numeric),
+    year   = as.integer(year),
+    buffer = as.integer(buffer)
+  ) %>%
+  filter(year %in% c(2010, 2020)) %>%
+  filter(!is.na(NDVI), !is.na(HU_density)) %>%
+  mutate(log_HU_density = log(pmax(HU_density, 1e-10)))
+
+# -----------------------------
+# 3. PIVOT TO WIDE
+# -----------------------------
+wide <- df %>%
+  select(GEOID20, season, buffer, year, log_HU_density, NDVI) %>%
+  pivot_wider(names_from  = year,
+              values_from = c(log_HU_density, NDVI),
+              names_sep   = "_") %>%
+  drop_na() %>%
+  mutate(delta_log_HU = log_HU_density_2020 - log_HU_density_2010,
+         delta_NDVI   = NDVI_2020 - NDVI_2010)
+
+# -----------------------------
+# 4. RESTRICT TO UPDATED SCENARIO SET
+# -----------------------------
+scenarios <- tibble::tribble(
+  ~season,           ~buffer,
+  "Dormant_Season",     1000,
+  "Growing_Season",      500,
+  "Growing_Season",     1000,
+  "Growing_Season",     2000
+)
+
+wide <- wide %>% semi_join(scenarios, by = c("season", "buffer"))
+
+# cat("Retained rows:", nrow(wide), "\n")
+# cat("Unique blocks:", n_distinct(wide$GEOID20), "\n\n")
+```
+
+### Baseline regressions (2010)
+
+For each combination of season (dormant, growing) and buffer distance (500 m, 1000 m, 2000 m), we fit ordinary least squares (OLS) linear regressions of the 2010 environmental variable on the natural log of 2010 housing unit density:
+
+- Greenness linear model: NDVI_2010 = $\alpha$ + $\beta$ $\times$ log(HU_density_2010)
+
+Housing unit densities of zero were replaced with a small positive value prior to log transformation to avoid undefined values. This produced six regression models for greenness (2 seasons × 3 buffers = 6 combinations each). **After scenario comparison (will add to supplemental)**, we found significant differences between dormant vs growing season. There is no statistical difference among buffers for dormant season; however, there is statistical difference among buffers for growing seasons. Regression coefficients, standard errors, p-values, and $R^2$ values are reported in Table 1.
+
+```{r echo=FALSE}
+# ============================================================
+# 5. FIT 2010 BASELINE REGRESSIONS (one per scenario)
+# ============================================================
+results <- scenarios %>%
+  mutate(data = map2(season, buffer, ~ wide %>%
+                       filter(season == .x, buffer == .y))) %>%
+  mutate(mod_green = map(data, ~ lm(NDVI_2010 ~ log_HU_density_2010, data = .x)))
+
+# -------------------------------------------------------
+# TABLE 1: 2010 Regression coefficients
+# -------------------------------------------------------
+reg_table <- results %>%
+  mutate(
+    tidy_green = map(mod_green, ~ {
+      s <- summary(.x)
+      tibble(
+        intercept = coef(.x)[1],
+        slope     = coef(.x)[2],
+        slope_se  = coef(s)[2, 2],
+        slope_p   = coef(s)[2, 4],
+        R2        = s$r.squared,
+        n         = nobs(.x)
+      )
+    })
+  ) %>%
+  select(season, buffer, tidy_green) %>%
+  unnest(tidy_green)
+
+cat("TABLE 1: 2010 OLS Regression Coefficients (Greenness)\n")
+cat("  NDVI_2010 ~ log(HU_density_2010)\n")
+print(as.data.frame(reg_table), digits = 4, row.names = FALSE)
+```
+
+### Residuals and pseudo-residuals
+
+The 2010 residuals from each model served as a baseline "greenness:housing index" (GHI), analogous to the tree:housing index (THI) in Lambert et al. (2025):
+
+- GHI_2010 = NDVI_2010 - $\hat{NDVI}_{2010}$ = NDVI_2010 - ($\hat{\alpha}_{2010}$ + $\hat{\beta}_{2010}$ $\times$ log(HU_density_2010))
+
+Positive index values indicate a block that is greener than average for its housing density (**Bright**); negative values indicate the opposite (**Dim**). We then used the 2010 model coefficients with 2020 housing density data to generate expected 2020 values:
+
+- $\hat{NDVI}_{2020}$ = $\hat{\alpha}_{2010}$ + $\hat{\beta}_{2010}$ $\times$ log(HU_density_2020)
+
+The 2020 pseudo-residuals were computed as:
+
+- GHI_2020 = NDVI_2020 - $\hat{NDVI}_{2020}$ = NDVI_2020 − ($\hat{\alpha}_{2010}$ + $\hat{\beta}_{2010}$ $\times$ log(HU_density_2020))
+
+We classified each block's state in each year as "Bright" (GHI $\geq$ 0) or "Dim" (GHI < 0) and tracked transitions between states (Bright → Bright, Bright → Dim, Dim → Bright, Dim → Dim).
+
+### Change variables
+
+We computed change in each index as:
+
+- $\Delta$GHI = GHI_2020 − GHI_2010
+
+Positive $\Delta$GHI values indicate "**brightening**"—a block became greener than expected relative to its housing density change, compared to the 2010 baseline. Negative values indicate "**dimming**." 
+
+
+```{r echo=FALSE}
+# ============================================================
+# 6. COMPUTE RESIDUALS (2010) AND PSEUDO-RESIDUALS (2020)
+# ============================================================
+results <- results %>%
+  mutate(
+    data = map2(data, mod_green, function(d, mg) {
+      d %>%
+        mutate(
+          resid_green_2010 = NDVI_2010 - predict(mg, newdata = d),
+          pred_green_2020  = predict(mg, newdata = data.frame(
+            log_HU_density_2010 = d$log_HU_density_2020)),
+          resid_green_2020 = NDVI_2020 - pred_green_2020,
+          change_green     = resid_green_2020 - resid_green_2010
+        )
+    })
+  )
+
+all_data <- results %>%
+  select(data) %>%
+  unnest(data) %>%
+  mutate(
+    state_green_2010 = ifelse(resid_green_2010 >= 0, "Bright", "Dim"),
+    state_green_2020 = ifelse(resid_green_2020 >= 0, "Bright", "Dim"),
+    transition_green = paste0(state_green_2010, " -> ", state_green_2020),
+    direction_green  = case_when(
+      change_green > 0 ~ "Brightened",
+      change_green < 0 ~ "Dimmed",
+      TRUE ~ "No change"
+    )
+  )
+```
+
+
+There are six possible cases in total:
+
+| $GHI_{2010}$       | $GHI_{2020}$                  | $\Delta$GHI                  | Interpretation         |
+|----------------|----------------------------|----------------------------|------------------------|
+| + (Bright) | + (Bright)  | + (Brightened)  | More bright |
+| + (Bright) | + (Bright)  | - (Dimmed)      | Still bright but decrease |
+| + (Bright) | - (Dim)     | - (Dimmed)      | The worst case  |
+| - (Dim)    | + (Bright)  | + (Brightened)  | The best case   |
+| - (Dim)    | - (Dim)     | + (Brightened)  | less dim  |
+| - (Dim)    | - (Dim)     | - (Dimmed)      | more dim |
+
+### Statistical comparisons across buffer and season
+
+To assess whether the magnitude of brightening or dimming differed across buffer distances and seasons, we conducted:
+
+1. Paired t-tests comparing dormant versus growing season change values within each buffer, pairing observations by census block (GEOID20).
+2. One-way ANOVA (change ~ buffer) for greenness change variables, followed by a Tukey's Honest Significant Difference (HSD) post-hoc tests for pairwise buffer comparisons within each season, and a cross-buffer correlation.
+
+
+## Results
+
+```{r echo=FALSE}
+theme_lambert <- theme_minimal(base_size = 11) +
+  theme(strip.text       = element_text(face = "bold"),
+        panel.grid.minor = element_blank(),
+        legend.position  = "bottom")
+
+# Scenario label for cleaner faceting (1 dormant + 3 growing)
+all_data <- all_data %>%
+  mutate(scenario = paste(
+    ifelse(season == "Dormant_Season", "Dormant", "Growing"),
+    paste0(buffer, " m")),
+    scenario = factor(scenario,
+                      levels = c("Dormant 1000 m",
+                                 "Growing 500 m",
+                                 "Growing 1000 m",
+                                 "Growing 2000 m")))
+```
+
+### Statistical comparisons across buffer and season
+
+#### Paired t-tests: Season comparison within each buffer
+The paired t-test is significant (p-value < 2.2e-16), indicating a meaningful difference between the dormant and growing seasons in greenness.
+
+```{r echo=FALSE}
+# ============================================================
+# 7. STATISTICAL COMPARISONS
+# ============================================================
+
+# --- 7a. Paired t-test: Dormant (1000m) vs Growing (1000m) ---
+cat("PAIRED t-TEST: Dormant_Season_1000 vs Growing_Season_1000\n")
+
+paired <- all_data %>%
+  filter(buffer == 1000) %>%
+  select(GEOID20, season, change_green) %>%
+  pivot_wider(names_from = season, values_from = change_green) %>%
+  drop_na()
+
+print(t.test(paired$Dormant_Season, paired$Growing_Season, paired = TRUE))
+```
+
+#### ANOVA (Tukey HSD) and correlation for buffer within each season
+
+```{r echo=FALSE}
+# --- 7b. ANOVA: buffer effect within growing season ---
+cat("ANOVA: change_green ~ buffer (Growing Season only)\n")
+
+grow <- all_data %>% filter(season == "Growing_Season")
+grow$buffer_f <- factor(grow$buffer)
+aov_grow <- aov(change_green ~ buffer_f, data = grow)
+print(summary(aov_grow))
+
+cat("\n--- Tukey HSD pairwise buffer comparisons (Growing Season) ---\n")
+print(TukeyHSD(aov_grow))
+
+# --- 7c. Cross-buffer correlation within growing season ---
+cat("Cross-buffer ΔGHI correlation (Growing Season)\n")
+
+cross_buf <- grow %>%
+  select(GEOID20, buffer, change_green) %>%
+  pivot_wider(names_from = buffer, values_from = change_green,
+              names_prefix = "b") %>%
+  drop_na()
+
+print(round(cor(cross_buf %>% select(-GEOID20)), 4))
+```
+
+
+### Change variable summaries
+
+```{r figure5, echo=FALSE}
+# -------------------------------------------------------
+# FIGURE 5: Boxplot of ΔGHI by scenario
+# -------------------------------------------------------
+fig5 <- ggplot(all_data, aes(x = scenario, y = change_green, fill = scenario)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  geom_boxplot(outlier.size = 0.3, outlier.alpha = 0.2, width = 0.6) +
+  scale_fill_manual(values = c("Dormant 1000 m" = "#abd9e9",
+                                "Growing 500 m"  = "#c7e9c0",
+                                "Growing 1000 m" = "#66c164",
+                                "Growing 2000 m" = "#1a9641"),
+                    guide = "none") +
+  labs(title    = "Distribution of ΔGHI by Scenario",
+       subtitle = "Positive = brightening; Negative = dimming (relative to 2010 baseline)",
+       x = NULL,
+       y = "ΔGHI (pseudo-residual change)") +
+  theme_lambert
+
+fig5
+
+```
+
+Table 2 reports the mean, standard deviation, and median of the greenness ($\Delta$GHI) for each season–buffer combination, along with the percentage of blocks that brightened or dimmed. 
+
+```{r echo=FALSE}
+# ============================================================
+# TABLE 2: Change summary by scenario
+# ============================================================
+change_summary <- all_data %>%
+  group_by(season, buffer) %>%
+  summarise(
+    n                    = n(),
+    mean_change_green    = mean(change_green),
+    sd_change_green      = sd(change_green),
+    median_change_green  = median(change_green),
+    pct_brightened_green = mean(change_green > 0) * 100,
+    pct_dimmed_green     = mean(change_green < 0) * 100,
+    .groups = "drop"
+  )
+
+cat("TABLE 2: Greenness Change Summary by Scenario\n")
+print(as.data.frame(change_summary), digits = 4, row.names = FALSE)
+```
+
+
+### Bright/Dim transitions 
+
+Tables 3 reports the number of census blocks in each transition category (Bright → Bright, Bright → Dim, Dim → Bright, Dim → Dim) for greenness, stratified by season and buffer. 
+
+```{r table3, echo=FALSE}
+# ============================================================
+# TABLE 3: Bright/Dim transitions
+# ============================================================
+transition_green <- all_data %>%
+  group_by(season, buffer, transition_green) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  pivot_wider(names_from = transition_green, values_from = n, values_fill = 0)
+
+cat("TABLE 3: Greenness Bright/Dim Transitions (2010 -> 2020)\n")
+print(as.data.frame(transition_green), row.names = FALSE)
+```
+
+
+### Visualization of ΔGHI
+```{r figure2, echo=FALSE}
+# -------------------------------------------------------
+# FIGURE 2: ΔGHI vs housing density change
+# -------------------------------------------------------
+fig2 <- ggplot(all_data,
+               aes(x = delta_log_HU, y = change_green)) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "black", linewidth = 0.4) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50", linewidth = 0.3) +
+  geom_point(aes(color = direction_green), alpha = 0.15, size = 0.5) +
+  geom_smooth(method = "lm", se = TRUE, color = "black", linewidth = 0.7) +
+  scale_color_manual(
+    values = c("Brightened" = "#fdae61", "Dimmed" = "#878787", "No change" = "grey50"),
+    name = "Direction") +
+  facet_wrap(~ scenario, nrow = 1) +
+  labs(title    = "Change in Greenness Index vs. Housing Density Change",
+       # subtitle = "Positive = brightening (greener than expected); Negative = dimming",
+       x = expression(Delta ~ "log(HU density/ha), 2020 - 2010"),
+       y = expression(Delta ~ "Greenness Index")) +
+  theme_lambert
+
+fig2
+```
+
+```{r figure3, echo=FALSE}
+# -------------------------------------------------------
+# FIGURE 3: ΔGHI vs raw NDVI change
+# -------------------------------------------------------
+fig3 <- ggplot(all_data,
+               aes(x = delta_NDVI, y = change_green)) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "black", linewidth = 0.4) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50", linewidth = 0.3) +
+  geom_point(aes(color = direction_green), alpha = 0.15, size = 0.5) +
+  geom_smooth(method = "lm", se = TRUE, color = "black", linewidth = 0.7) +
+  scale_color_manual(
+    values = c("Brightened" = "#fdae61", "Dimmed" = "#878787", "No change" = "grey50"),
+    name = "Direction") +
+  facet_wrap(~ scenario, nrow = 1) +
+  labs(title    = "Change in Greenness Index vs. Raw NDVI Change",
+       x = expression(Delta ~ "NDVI, 2020 - 2010"),
+       y = expression(Delta ~ "Greenness Index")) +
+  theme_lambert
+
+fig3
+```

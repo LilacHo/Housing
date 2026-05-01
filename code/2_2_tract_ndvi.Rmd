@@ -24,225 +24,150 @@ here::i_am("code/2_2_tract_ndvi.Rmd")
 
 ## Demographic categories
 
-- **Race:** AIAN, Asian, Black, NHOPI, Two or More, White (individual categories, not collapsed)
+- **Race:** AIAN, Asian, Black, NHOPI, Two or More, White
 - **Age:** 0–19, 20–29, 30–59, 60+
 
 ---
 
-## Why only 1000 m at the tract level?
-
-Buffer main effect is not statistically significant (p = 0.10 dormant, p = 0.39 growing). Cross-buffer ΔGHI correlations are 0.75–0.99. Cohen's d for 500 vs. 2000 m is negligible (|d| ≤ 0.07). AIC/BIC prefer the season-only model. The choice of 1000 m is arbitrary among the three — any buffer gives the same answer.
-
----
-
 ```{r echo=FALSE, message=FALSE, warning=FALSE}
-# ============================================================
-# DATA PREPARATION (sections 1-4 from 2_2_tract_ndvi.R)
-# ============================================================
 ndvi_tract <- read.csv(here::here("data", "tract_final.csv"))
 
 df <- ndvi_tract %>%
-  mutate(
-    across(all_of(c("NDVI", "HU_density")), as.numeric),
-    year   = as.integer(year),
-    buffer = as.integer(buffer)
-  ) %>%
-  filter(year %in% c(2010, 2020)) %>%
-  filter(!is.na(NDVI), !is.na(HU_density), HU_density > 0) %>%
+  mutate(across(all_of(c("NDVI", "HU_density")), as.numeric),
+         year = as.integer(year), buffer = as.integer(buffer)) %>%
+  filter(year %in% c(2010, 2020), !is.na(NDVI), !is.na(HU_density), HU_density > 0) %>%
   mutate(log_HU_density = log(HU_density))
 
 wide <- df %>%
   select(tract, season, buffer, year, log_HU_density, NDVI, HU, POP, area_ha) %>%
-  pivot_wider(names_from  = year,
-              values_from = c(log_HU_density, NDVI, HU, POP),
-              names_sep   = "_") %>%
+  pivot_wider(names_from = year, values_from = c(log_HU_density, NDVI, HU, POP), names_sep = "_") %>%
   drop_na() %>%
   mutate(delta_log_HU = log_HU_density_2020 - log_HU_density_2010,
-         delta_NDVI   = NDVI_2020 - NDVI_2010,
-         delta_HU     = HU_2020 - HU_2010,
-         delta_POP    = POP_2020 - POP_2010,
-         HU_density_2010 = HU_2010 / area_ha,
-         HU_density_2020 = HU_2020 / area_ha,
+         delta_NDVI = NDVI_2020 - NDVI_2010,
+         delta_HU = HU_2020 - HU_2010, delta_POP = POP_2020 - POP_2010,
+         HU_density_2010 = HU_2010 / area_ha, HU_density_2020 = HU_2020 / area_ha,
          delta_HU_density = HU_density_2020 - HU_density_2010)
 
-scenarios <- tibble::tribble(
-  ~season,           ~buffer,
-  "Dormant_Season",     1000,
-  "Growing_Season",     1000
-)
-
+scenarios <- tibble::tribble(~season, ~buffer, "Dormant_Season", 1000, "Growing_Season", 1000)
 wide <- wide %>% semi_join(scenarios, by = c("season", "buffer"))
 
 theme_lambert <- theme_minimal(base_size = 11) +
-  theme(strip.text       = element_text(face = "bold"),
-        panel.grid.minor = element_blank(),
-        legend.position  = "bottom")
+  theme(strip.text = element_text(face = "bold"), panel.grid.minor = element_blank(),
+        legend.position = "bottom")
 ```
 
 ## Part I: Pseudo-Residual Greenness Analysis
 
-### Methods
-
 $\text{NDVI}_{2010} = \alpha + \beta \cdot \log(\text{HU_density}_{2010})$
 
-- GHI~2010~ = NDVI~2010~ − ($\hat{\alpha}$ + $\hat{\beta}$ · log(HU_density~2010~))
-- GHI~2020~ = NDVI~2020~ − ($\hat{\alpha}$ + $\hat{\beta}$ · log(HU_density~2020~))
+- GHI~2010~ = NDVI~2010~ − ($\hat{\alpha}_{2010}$ + $\hat{\beta}_{2010}$ · log(HU_density~2010~))
+- GHI~2020~ = NDVI~2020~ − ($\hat{\alpha}_{2010}$ + $\hat{\beta}_{2010}$ · log(HU_density~2020~))
 - **ΔGHI = GHI~2020~ − GHI~2010~**
 
-Sample: **`r nrow(wide)`** tract × scenario rows across **`r n_distinct(wide$tract)`** unique tracts.
+Sample: **`r n_distinct(wide$tract)`** unique tracts.
 
 ### Table 1 — 2010 baseline regressions
 
 ```{r echo=FALSE, message=FALSE}
 results <- scenarios %>%
-  mutate(data = map2(season, buffer, ~ wide %>%
-                       filter(season == .x, buffer == .y))) %>%
+  mutate(data = map2(season, buffer, ~ wide %>% filter(season == .x, buffer == .y))) %>%
   mutate(mod_green = map(data, ~ lm(NDVI_2010 ~ log_HU_density_2010, data = .x)))
 
 reg_table <- results %>%
-  mutate(
-    tidy_green = map(mod_green, ~ {
-      s <- summary(.x)
-      tibble(intercept = coef(.x)[1], slope = coef(.x)[2],
-             slope_se = coef(s)[2, 2], slope_p = coef(s)[2, 4],
-             R2 = s$r.squared, n = nobs(.x))
-    })
-  ) %>%
-  select(season, buffer, tidy_green) %>%
-  unnest(tidy_green)
+  mutate(tidy_green = map(mod_green, ~ {
+    s <- summary(.x)
+    tibble(intercept = coef(.x)[1], slope = coef(.x)[2],
+           slope_se = coef(s)[2, 2], slope_p = coef(s)[2, 4],
+           R2 = s$r.squared, n = nobs(.x))
+  })) %>% select(season, buffer, tidy_green) %>% unnest(tidy_green)
 
 knitr::kable(reg_table, digits = 4)
 ```
+
+At the tract scale, the housing-density–NDVI relationship is strongly negative (slope ≈ −0.044 to −0.049), with R² of 0.42–0.51. This reveals the expected urban signal: denser tracts are measurably less green.
 
 ### Table 2 — ΔGHI summary
 
 ```{r echo=FALSE, message=FALSE}
 results <- results %>%
-  mutate(
-    data = map2(data, mod_green, function(d, mg) {
-      d %>% mutate(
-        resid_green_2010 = NDVI_2010 - predict(mg, newdata = d),
-        pred_green_2020  = predict(mg, newdata = data.frame(
-          log_HU_density_2010 = d$log_HU_density_2020)),
-        resid_green_2020 = NDVI_2020 - pred_green_2020,
-        change_green     = resid_green_2020 - resid_green_2010)
-    })
-  )
+  mutate(data = map2(data, mod_green, function(d, mg) {
+    d %>% mutate(
+      resid_green_2010 = NDVI_2010 - predict(mg, newdata = d),
+      pred_green_2020 = predict(mg, newdata = data.frame(log_HU_density_2010 = d$log_HU_density_2020)),
+      resid_green_2020 = NDVI_2020 - pred_green_2020,
+      change_green = resid_green_2020 - resid_green_2010)
+  }))
 
-all_data <- results %>%
-  select(data) %>% unnest(data) %>%
-  mutate(
-    state_green_2010 = ifelse(resid_green_2010 >= 0, "Bright", "Dim"),
-    state_green_2020 = ifelse(resid_green_2020 >= 0, "Bright", "Dim"),
-    transition_green = paste0(state_green_2010, " -> ", state_green_2020),
-    direction_green  = case_when(
-      change_green > 0 ~ "Brightened",
-      change_green < 0 ~ "Dimmed",
-      TRUE ~ "No change"),
-    scenario = factor(paste(ifelse(season == "Dormant_Season", "Dormant", "Growing"), "1000 m"),
-                      levels = c("Dormant 1000 m", "Growing 1000 m"))
-  )
+all_data <- results %>% select(data) %>% unnest(data) %>%
+  mutate(state_green_2010 = ifelse(resid_green_2010 >= 0, "Bright", "Dim"),
+         state_green_2020 = ifelse(resid_green_2020 >= 0, "Bright", "Dim"),
+         transition_green = paste0(state_green_2010, " -> ", state_green_2020),
+         direction_green = case_when(change_green > 0 ~ "Brightened", change_green < 0 ~ "Dimmed", TRUE ~ "No change"),
+         scenario = factor(paste(ifelse(season == "Dormant_Season", "Dormant", "Growing"), "1000 m"),
+                           levels = c("Dormant 1000 m", "Growing 1000 m")))
 
-change_summary <- all_data %>%
-  group_by(season, buffer) %>%
+change_summary <- all_data %>% group_by(season, buffer) %>%
   summarise(n = n(), mean = mean(change_green), sd = sd(change_green),
-            median = median(change_green),
-            pct_bright = mean(change_green > 0) * 100,
+            median = median(change_green), pct_bright = mean(change_green > 0) * 100,
             pct_dim = mean(change_green < 0) * 100, .groups = "drop")
 
 knitr::kable(change_summary, digits = 4)
 ```
 
+The two seasons tell fundamentally different stories. In the dormant season, the average tract dimmed by 0.086 NDVI units, and 80% of tracts dimmed — indicating widespread loss of structural and evergreen vegetation visible during leaf-off conditions. In the growing season, the pattern reverses: the average tract brightened slightly (+0.011), and 78% of tracts brightened, suggesting that active-season canopy held or improved even as winter greenness declined. A tract can simultaneously lose dormant-season greenness and gain growing-season greenness; this is not a contradiction but reflects different ecological signals (evergreen/structural cover vs. deciduous canopy cover).
+
 ### Table 3 — Bright/Dim transitions
 
 ```{r echo=FALSE}
-trans_tbl <- all_data %>%
-  group_by(season, buffer, transition_green) %>%
+trans_tbl <- all_data %>% group_by(season, buffer, transition_green) %>%
   summarise(n = n(), .groups = "drop") %>%
   pivot_wider(names_from = transition_green, values_from = n, values_fill = 0)
-
 knitr::kable(trans_tbl)
 ```
 
-### Paired t-test — Dormant vs. Growing
-
-```{r echo=FALSE}
-paired <- all_data %>%
-  select(tract, season, change_green) %>%
-  pivot_wider(names_from = season, values_from = change_green) %>%
-  drop_na()
-t.test(paired$Dormant_Season, paired$Growing_Season, paired = TRUE)
-```
+The dormant-season transition asymmetry is striking: 495 tracts shifted from Bright to Dim, while only 57 moved from Dim to Bright — an 8.7:1 ratio. This is sharper than the block-level asymmetry (7.5:1). In the growing season, Bright→Bright dominates (759 tracts), and the few transitions that occur slightly favor improvement (69 Dim→Bright vs. 22 Bright→Dim).
 
 
 ### Greenness figures
 
 ```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=5}
-# Fig 1: 2010 baseline
 ggplot(all_data, aes(x = log_HU_density_2010, y = NDVI_2010)) +
   geom_point(alpha = 0.2, size = 0.5, color = "grey40") +
   geom_smooth(method = "lm", se = TRUE, color = "#2c7bb6", linewidth = 0.8) +
   facet_wrap(~ scenario) +
   labs(title = "2010 Baseline: Greenness vs. Housing Density",
-       x = "log(HU density/ha), 2010", y = "NDVI, 2010") +
-  theme_lambert
+       x = "log(HU density/ha), 2010", y = "NDVI, 2010") + theme_lambert
 ```
 
 ```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=5}
-# Fig 2: ΔGHI vs housing density change
 ggplot(all_data, aes(x = delta_log_HU, y = change_green)) +
   geom_hline(yintercept = 0, linetype = "solid", color = "black", linewidth = 0.4) +
   geom_vline(xintercept = 0, linetype = "dashed", color = "grey50", linewidth = 0.3) +
   geom_point(aes(color = direction_green), alpha = 0.4, size = 0.8) +
   geom_smooth(method = "lm", se = TRUE, color = "black", linewidth = 0.7) +
-  scale_color_manual(values = c("Brightened" = "#fdae61", "Dimmed" = "#878787",
-                                "No change" = "grey50"), name = "Direction") +
+  scale_color_manual(values = c("Brightened" = "#fdae61", "Dimmed" = "#878787", "No change" = "grey50"), name = "Direction") +
   facet_wrap(~ scenario) +
-  labs(title = "ΔGHI vs. Housing Density Change",
-       x = expression(Delta ~ "log(HU density/ha)"), y = expression(Delta ~ "GHI")) +
-  theme_lambert
+  labs(title = "ΔGHI vs. Housing Density Change", x = expression(Delta ~ "log(HU density/ha)"), y = expression(Delta ~ "GHI")) + theme_lambert
 ```
 
 ```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=5}
-# Fig 3: ΔGHI vs raw NDVI change
 ggplot(all_data, aes(x = delta_NDVI, y = change_green)) +
   geom_hline(yintercept = 0, linetype = "solid", color = "black", linewidth = 0.4) +
   geom_vline(xintercept = 0, linetype = "dashed", color = "grey50", linewidth = 0.3) +
   geom_point(aes(color = direction_green), alpha = 0.4, size = 0.8) +
   geom_smooth(method = "lm", se = TRUE, color = "black", linewidth = 0.7) +
-  scale_color_manual(values = c("Brightened" = "#fdae61", "Dimmed" = "#878787",
-                                "No change" = "grey50"), name = "Direction") +
+  scale_color_manual(values = c("Brightened" = "#fdae61", "Dimmed" = "#878787", "No change" = "grey50"), name = "Direction") +
   facet_wrap(~ scenario) +
-  labs(title = "ΔGHI vs. Raw NDVI Change",
-       x = expression(Delta ~ "NDVI"), y = expression(Delta ~ "GHI")) +
-  theme_lambert
+  labs(title = "ΔGHI vs. Raw NDVI Change", x = expression(Delta ~ "NDVI"), y = expression(Delta ~ "GHI")) + theme_lambert
 ```
 
+
 ```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width=7, fig.height=5}
-# Fig 5: Boxplot
 ggplot(all_data, aes(x = scenario, y = change_green, fill = scenario)) +
   geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
   geom_boxplot(outlier.size = 0.5, outlier.alpha = 0.5, width = 0.5) +
-  scale_fill_manual(values = c("Dormant 1000 m" = "#abd9e9",
-                                "Growing 1000 m" = "#66c164"), guide = "none") +
-  labs(title = "Distribution of ΔGHI by Scenario", x = NULL, y = "ΔGHI") +
-  theme_lambert
-```
-
-```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width=7, fig.height=5}
-# Fig 6: Mean ΔGHI with 95% CI
-ci_data <- all_data %>%
-  group_by(scenario) %>%
-  summarise(mean = mean(change_green), se = sd(change_green) / sqrt(n()), .groups = "drop") %>%
-  mutate(lo = mean - 1.96 * se, hi = mean + 1.96 * se)
-
-ggplot(ci_data, aes(x = scenario, y = mean, color = scenario)) +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  geom_pointrange(aes(ymin = lo, ymax = hi), size = 0.8) +
-  scale_color_manual(values = c("Dormant 1000 m" = "#2c7bb6",
-                                 "Growing 1000 m" = "#1a9641"), guide = "none") +
-  labs(title = "Mean ΔGHI with 95% CI", x = NULL, y = "Mean ΔGHI") +
-  theme_lambert
+  scale_fill_manual(values = c("Dormant 1000 m" = "#abd9e9", "Growing 1000 m" = "#66c164"), guide = "none") +
+  labs(title = "Distribution of ΔGHI by Scenario", x = NULL, y = "ΔGHI") + theme_lambert
 ```
 
 ---
@@ -251,12 +176,9 @@ ggplot(ci_data, aes(x = scenario, y = mean, color = scenario)) +
 ## Part II: Where Is Housing Being Built and Who Lives There?
 
 ```{r echo=FALSE, message=FALSE, warning=FALSE}
-# ============================================================
-# DEMOGRAPHICS: 6 race categories, 4 age groups
-# ============================================================
-age  <- read.csv(here::here("data", "age", "age_10_20.csv"))
-race <- read.csv(here::here("data", "race","race_10_20.csv"))
-
+# DEMOGRAPHICS
+age  <- read.csv(here::here("data", "age_10_20.csv"))
+race <- read.csv(here::here("data", "race_10_20.csv"))
 age$tract  <- as.numeric(gsub("[^0-9]", "", as.character(age$tract20l)))
 race$tract <- as.numeric(gsub("[^0-9]", "", as.character(race$tract20l)))
 
@@ -266,73 +188,50 @@ age_bands <- c("age0_4","age5_9","age10_14","age15_19","age20_24","age25_29",
 
 age_group_pct <- function(df, yr) {
   cols <- paste0(age_bands, "_", yr)
-  A <- as.matrix(df[, cols])
-  total <- rowSums(A)
+  A <- as.matrix(df[, cols]); total <- rowSums(A)
   total_safe <- ifelse(total == 0, NA_real_, total)
-  data.frame(total = total,
-             pct_0_19  = rowSums(A[, 1:4])   / total_safe * 100,
-             pct_20_29 = rowSums(A[, 5:6])   / total_safe * 100,
-             pct_30_59 = rowSums(A[, 7:12])  / total_safe * 100,
-             pct_60p   = rowSums(A[, 13:18]) / total_safe * 100)
+  data.frame(total = total, pct_0_19 = rowSums(A[,1:4])/total_safe*100,
+             pct_20_29 = rowSums(A[,5:6])/total_safe*100,
+             pct_30_59 = rowSums(A[,7:12])/total_safe*100,
+             pct_60p = rowSums(A[,13:18])/total_safe*100)
 }
-a10 <- age_group_pct(age, 2010)
-a20 <- age_group_pct(age, 2020)
+a10 <- age_group_pct(age, 2010); a20 <- age_group_pct(age, 2020)
 
 age_delta_chi <- function(df) {
-  A10 <- as.matrix(df[, paste0(age_bands, "_2010")])
-  A20 <- as.matrix(df[, paste0(age_bands, "_2020")])
-  G10 <- cbind(rowSums(A10[,1:4]), rowSums(A10[,5:6]),
-               rowSums(A10[,7:12]), rowSums(A10[,13:18]))
-  G20 <- cbind(rowSums(A20[,1:4]), rowSums(A20[,5:6]),
-               rowSums(A20[,7:12]), rowSums(A20[,13:18]))
+  A10 <- as.matrix(df[, paste0(age_bands, "_2010")]); A20 <- as.matrix(df[, paste0(age_bands, "_2020")])
+  G10 <- cbind(rowSums(A10[,1:4]), rowSums(A10[,5:6]), rowSums(A10[,7:12]), rowSums(A10[,13:18]))
+  G20 <- cbind(rowSums(A20[,1:4]), rowSums(A20[,5:6]), rowSums(A20[,7:12]), rowSums(A20[,13:18]))
   T10 <- rowSums(G10); T20 <- rowSums(G20)
-  P10 <- G10 / ifelse(T10 == 0, NA_real_, T10)
-  P20 <- G20 / ifelse(T20 == 0, NA_real_, T20)
-  Pbar <- (P10 + P20) / 2
-  num  <- (P20 - P10)^2
-  ratio <- ifelse(Pbar > 0, num / Pbar, 0)
-  rowSums(ratio, na.rm = TRUE)
+  P10 <- G10/ifelse(T10==0,NA_real_,T10); P20 <- G20/ifelse(T20==0,NA_real_,T20)
+  Pbar <- (P10+P20)/2; num <- (P20-P10)^2
+  ratio <- ifelse(Pbar > 0, num/Pbar, 0); rowSums(ratio, na.rm = TRUE)
 }
 
-age_out <- data.frame(
-  tract = age$tract, total_pop_2010 = a10$total, total_pop_2020 = a20$total,
-  pct_0_19_2010 = a10$pct_0_19, pct_0_19_2020 = a20$pct_0_19,
-  pct_20_29_2010 = a10$pct_20_29, pct_20_29_2020 = a20$pct_20_29,
-  pct_30_59_2010 = a10$pct_30_59, pct_30_59_2020 = a20$pct_30_59,
-  pct_60p_2010 = a10$pct_60p, pct_60p_2020 = a20$pct_60p,
-  delta_chi_age = age_delta_chi(age)
-)
-age_out$delta_pct_0_19  <- age_out$pct_0_19_2020  - age_out$pct_0_19_2010
+age_out <- data.frame(tract=age$tract, total_pop_2010=a10$total, total_pop_2020=a20$total,
+  pct_0_19_2010=a10$pct_0_19, pct_0_19_2020=a20$pct_0_19,
+  pct_20_29_2010=a10$pct_20_29, pct_20_29_2020=a20$pct_20_29,
+  pct_30_59_2010=a10$pct_30_59, pct_30_59_2020=a20$pct_30_59,
+  pct_60p_2010=a10$pct_60p, pct_60p_2020=a20$pct_60p, delta_chi_age=age_delta_chi(age))
+age_out$delta_pct_0_19 <- age_out$pct_0_19_2020 - age_out$pct_0_19_2010
 age_out$delta_pct_20_29 <- age_out$pct_20_29_2020 - age_out$pct_20_29_2010
 age_out$delta_pct_30_59 <- age_out$pct_30_59_2020 - age_out$pct_30_59_2010
-age_out$delta_pct_60p   <- age_out$pct_60p_2020   - age_out$pct_60p_2010
-age_out$delta_pop       <- age_out$total_pop_2020  - age_out$total_pop_2010
+age_out$delta_pct_60p <- age_out$pct_60p_2020 - age_out$pct_60p_2010
+age_out$delta_pop <- age_out$total_pop_2020 - age_out$total_pop_2010
 
-# Race
-race_cats   <- c("AIAN", "ASIAN", "Black", "NHOPI", "Two", "White")
-race_labels <- c("AIAN", "Asian", "Black", "NHOPI", "Two_or_More", "White")
-
-R10 <- as.matrix(race[, paste0(race_cats, "2010")])
-R20 <- as.matrix(race[, paste0(race_cats, "2020")])
+race_cats <- c("AIAN","ASIAN","Black","NHOPI","Two","White")
+race_labels <- c("AIAN","Asian","Black","NHOPI","Two_or_More","White")
+R10 <- as.matrix(race[, paste0(race_cats,"2010")]); R20 <- as.matrix(race[, paste0(race_cats,"2020")])
 T10 <- rowSums(R10); T20 <- rowSums(R20)
-P10 <- R10 / ifelse(T10 == 0, NA_real_, T10)
-P20 <- R20 / ifelse(T20 == 0, NA_real_, T20)
-Pbar_race <- (P10 + P20) / 2
-num_race  <- (P20 - P10)^2
-ratio_race <- ifelse(Pbar_race > 0, num_race / Pbar_race, 0)
-
-race_out <- data.frame(
-  tract = race$tract, total_race_2010 = T10, total_race_2020 = T20,
-  delta_chi_race = rowSums(ratio_race, na.rm = TRUE)
-)
+P10 <- R10/ifelse(T10==0,NA_real_,T10); P20 <- R20/ifelse(T20==0,NA_real_,T20)
+Pbar_race <- (P10+P20)/2; num_race <- (P20-P10)^2
+ratio_race <- ifelse(Pbar_race > 0, num_race/Pbar_race, 0)
+race_out <- data.frame(tract=race$tract, total_race_2010=T10, total_race_2020=T20,
+                        delta_chi_race=rowSums(ratio_race, na.rm=TRUE))
 for (i in seq_along(race_cats)) {
-  race_out[[paste0("pct_", race_labels[i], "_2010")]] <- P10[, paste0(race_cats[i], "2010")] * 100
-  race_out[[paste0("pct_", race_labels[i], "_2020")]] <- P20[, paste0(race_cats[i], "2020")] * 100
+  race_out[[paste0("pct_",race_labels[i],"_2010")]] <- P10[, paste0(race_cats[i],"2010")] * 100
+  race_out[[paste0("pct_",race_labels[i],"_2020")]] <- P20[, paste0(race_cats[i],"2020")] * 100
 }
-for (rl in race_labels) {
-  race_out[[paste0("delta_pct_", rl)]] <-
-    race_out[[paste0("pct_", rl, "_2020")]] - race_out[[paste0("pct_", rl, "_2010")]]
-}
+for (rl in race_labels) race_out[[paste0("delta_pct_",rl)]] <- race_out[[paste0("pct_",rl,"_2020")]] - race_out[[paste0("pct_",rl,"_2010")]]
 
 demo <- age_out %>% full_join(race_out, by = "tract")
 analysis_demo <- all_data %>% left_join(demo, by = "tract")
@@ -341,85 +240,87 @@ analysis_demo <- all_data %>% left_join(demo, by = "tract")
 ### Table 4 — Housing growth summary
 
 ```{r echo=FALSE}
-tract_housing <- analysis_demo %>%
-  filter(season == "Dormant_Season") %>%
+tract_housing <- analysis_demo %>% filter(season == "Dormant_Season") %>%
   select(tract, area_ha, HU_2010, HU_2020, POP_2010, POP_2020,
-         delta_HU, delta_POP, delta_HU_density,
-         HU_density_2010, HU_density_2020,
-         starts_with("pct_"), starts_with("delta_"),
-         starts_with("total_pop"), starts_with("total_race"))
+         delta_HU, delta_POP, delta_HU_density, HU_density_2010, HU_density_2020,
+         starts_with("pct_"), starts_with("delta_"), starts_with("total_pop"), starts_with("total_race"))
 
 housing_summary <- tract_housing %>%
-  summarise(
-    n_tracts = n(),
-    total_HU_2010 = sum(HU_2010, na.rm = TRUE),
-    total_HU_2020 = sum(HU_2020, na.rm = TRUE),
-    total_delta_HU = sum(delta_HU, na.rm = TRUE),
-    pct_gained = mean(delta_HU > 0, na.rm = TRUE) * 100,
-    pct_lost = mean(delta_HU < 0, na.rm = TRUE) * 100,
-    median_delta_HU = median(delta_HU, na.rm = TRUE),
-    mean_delta_HU = mean(delta_HU, na.rm = TRUE),
-    total_POP_2010 = sum(POP_2010, na.rm = TRUE),
-    total_POP_2020 = sum(POP_2020, na.rm = TRUE),
-    total_delta_POP = sum(delta_POP, na.rm = TRUE)
-  )
-
+  summarise(n_tracts = n(), total_HU_2010 = sum(HU_2010, na.rm=TRUE),
+            total_HU_2020 = sum(HU_2020, na.rm=TRUE), total_delta_HU = sum(delta_HU, na.rm=TRUE),
+            pct_gained = mean(delta_HU > 0, na.rm=TRUE)*100, pct_lost = mean(delta_HU < 0, na.rm=TRUE)*100,
+            median_delta_HU = median(delta_HU, na.rm=TRUE), mean_delta_HU = mean(delta_HU, na.rm=TRUE),
+            total_POP_2010 = sum(POP_2010, na.rm=TRUE), total_POP_2020 = sum(POP_2020, na.rm=TRUE),
+            total_delta_POP = sum(delta_POP, na.rm=TRUE))
 knitr::kable(t(housing_summary), col.names = "Value", digits = 1)
 ```
 
-### Table 5 — Demographics by housing growth quartile
+Washington's 1,318 analytical tracts gained approximately 255,000 housing units between 2010 and 2020, a net increase of 11.6%. Housing growth was nearly universal: 92% of tracts gained units, while only 8% lost them. However, growth was highly concentrated — the mean gain (194 units) was nearly double the median (102 units), indicating a right-skewed distribution in which a minority of tracts absorbed a disproportionate share of new construction. Population grew by approximately 800,000 over the same period.
+
+### Table 5a — Race composition by housing growth quartile
 
 ```{r echo=FALSE}
 tract_housing <- tract_housing %>%
   mutate(hu_growth_q = cut(delta_HU,
     breaks = quantile(delta_HU, probs = c(0, 0.25, 0.5, 0.75, 1), na.rm = TRUE),
-    labels = c("Q1 (least)", "Q2", "Q3", "Q4 (most)"),
-    include.lowest = TRUE))
+    labels = c("Q1 (least)", "Q2", "Q3", "Q4 (most)"), include.lowest = TRUE))
 
-demo_by_hu <- tract_housing %>%
-  group_by(hu_growth_q) %>%
-  summarise(
-    n = n(), mean_dHU = mean(delta_HU, na.rm = TRUE),
-    # Race 2020
-    across(all_of(paste0("pct_", race_labels, "_2020")),
-           ~ mean(.x, na.rm = TRUE), .names = "mean_{.col}"),
-    # Age 2020
-    mean_pct_0_19_2020 = mean(pct_0_19_2020, na.rm = TRUE),
-    mean_pct_20_29_2020 = mean(pct_20_29_2020, na.rm = TRUE),
-    mean_pct_30_59_2020 = mean(pct_30_59_2020, na.rm = TRUE),
-    mean_pct_60p_2020 = mean(pct_60p_2020, na.rm = TRUE),
-    # Race 2010
-    across(all_of(paste0("pct_", race_labels, "_2010")),
-           ~ mean(.x, na.rm = TRUE), .names = "mean_{.col}"),
-    # Age 2010
-    mean_pct_0_19_2010 = mean(pct_0_19_2010, na.rm = TRUE),
-    mean_pct_20_29_2010 = mean(pct_20_29_2010, na.rm = TRUE),
-    mean_pct_30_59_2010 = mean(pct_30_59_2010, na.rm = TRUE),
-    mean_pct_60p_2010 = mean(pct_60p_2010, na.rm = TRUE),
-    .groups = "drop"
-  )
-
-knitr::kable(demo_by_hu, digits = 1)
+race_by_hu <- tract_housing %>% group_by(hu_growth_q) %>%
+  summarise(n = n(), mean_dHU = mean(delta_HU, na.rm=TRUE),
+    # across(all_of(paste0("pct_", race_labels, "_2020")), ~ mean(.x, na.rm=TRUE), .names = "mean_{.col}"),
+    # across(all_of(paste0("pct_", race_labels, "_2010")), ~ mean(.x, na.rm=TRUE), .names = "mean_{.col}"),
+    across(all_of(paste0("delta_pct_", race_labels)), ~ mean(.x, na.rm=TRUE), .names = "mean_{.col}"),
+    .groups = "drop")
+knitr::kable(race_by_hu, digits = 1)
 ```
+
+
+
+### Table 5b — Age composition by housing growth quartile
+
+```{r echo=FALSE}
+age_by_hu <- tract_housing %>% group_by(hu_growth_q) %>%
+  summarise(n = n(), mean_dHU = mean(delta_HU, na.rm=TRUE),
+    # mean_pct_0_19_2020 = mean(pct_0_19_2020, na.rm=TRUE),
+    # mean_pct_20_29_2020 = mean(pct_20_29_2020, na.rm=TRUE),
+    # mean_pct_30_59_2020 = mean(pct_30_59_2020, na.rm=TRUE),
+    # mean_pct_60p_2020 = mean(pct_60p_2020, na.rm=TRUE),
+    # mean_pct_0_19_2010 = mean(pct_0_19_2010, na.rm=TRUE),
+    # mean_pct_20_29_2010 = mean(pct_20_29_2010, na.rm=TRUE),
+    # mean_pct_30_59_2010 = mean(pct_30_59_2010, na.rm=TRUE),
+    # mean_pct_60p_2010 = mean(pct_60p_2010, na.rm=TRUE),
+    mean_delta_pct_0_19 = mean(delta_pct_0_19, na.rm=TRUE),
+    mean_delta_pct_20_29 = mean(delta_pct_20_29, na.rm=TRUE),
+    mean_delta_pct_30_59 = mean(delta_pct_30_59, na.rm=TRUE),
+    mean_delta_pct_60p = mean(delta_pct_60p, na.rm=TRUE),
+    .groups = "drop")
+knitr::kable(age_by_hu, digits = 1)
+```
+
+
 
 ### Figure — Race composition by housing growth quartile
 
 ```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=5}
-race_by_hu_long <- demo_by_hu %>%
-  select(hu_growth_q,
-         starts_with("mean_pct_") & matches("(AIAN|Asian|Black|NHOPI|Two_or_More|White)")) %>%
-  pivot_longer(-hu_growth_q, names_to = "variable", values_to = "value") %>%
-  mutate(
-    year = ifelse(grepl("2010", variable), "2010", "2020"),
-    race = gsub("mean_pct_(.+)_(2010|2020)", "\\1", variable),
-    race = gsub("_", " ", race))
+demo_by_hu <- tract_housing %>% group_by(hu_growth_q) %>%
+  summarise(n = n(), mean_dHU = mean(delta_HU, na.rm=TRUE),
+    across(all_of(paste0("pct_", race_labels, "_2020")), ~ mean(.x, na.rm=TRUE), .names = "mean_{.col}"),
+    across(all_of(paste0("pct_", race_labels, "_2010")), ~ mean(.x, na.rm=TRUE), .names = "mean_{.col}"),
+    mean_pct_0_19_2020 = mean(pct_0_19_2020, na.rm=TRUE), mean_pct_20_29_2020 = mean(pct_20_29_2020, na.rm=TRUE),
+    mean_pct_30_59_2020 = mean(pct_30_59_2020, na.rm=TRUE), mean_pct_60p_2020 = mean(pct_60p_2020, na.rm=TRUE),
+    mean_pct_0_19_2010 = mean(pct_0_19_2010, na.rm=TRUE), mean_pct_20_29_2010 = mean(pct_20_29_2010, na.rm=TRUE),
+    mean_pct_30_59_2010 = mean(pct_30_59_2010, na.rm=TRUE), mean_pct_60p_2010 = mean(pct_60p_2010, na.rm=TRUE),
+    .groups = "drop")
 
+race_by_hu_long <- demo_by_hu %>%
+  select(hu_growth_q, starts_with("mean_pct_") & matches("(AIAN|Asian|Black|NHOPI|Two_or_More|White)")) %>%
+  pivot_longer(-hu_growth_q, names_to = "variable", values_to = "value") %>%
+  mutate(year = ifelse(grepl("2010", variable), "2010", "2020"),
+         race = gsub("mean_pct_(.+)_(2010|2020)", "\\1", variable), race = gsub("_", " ", race))
 ggplot(race_by_hu_long, aes(x = hu_growth_q, y = value, fill = race)) +
-  geom_col(position = "stack", width = 0.7) +
-  scale_fill_brewer(palette = "Set2", name = "Race") +
+  geom_col(position = "stack", width = 0.7) + scale_fill_brewer(palette = "Set2", name = "Race") +
   facet_wrap(~ year) +
-  labs(title = "Race Composition of Housing Growth Quartiles",
-       x = "Housing growth quartile (ΔHU)", y = "Mean % of tract population") +
+  labs(title = "Race Composition of Housing Growth Quartiles", x = "Housing growth quartile (ΔHU)", y = "Mean % of tract population") +
   theme_lambert + theme(axis.text.x = element_text(angle = 15, hjust = 1))
 ```
 
@@ -429,21 +330,14 @@ ggplot(race_by_hu_long, aes(x = hu_growth_q, y = value, fill = race)) +
 age_by_hu_long <- demo_by_hu %>%
   select(hu_growth_q, matches("mean_pct_(0_19|20_29|30_59|60p)_(2010|2020)")) %>%
   pivot_longer(-hu_growth_q, names_to = "variable", values_to = "value") %>%
-  mutate(
-    year = ifelse(grepl("2010", variable), "2010", "2020"),
-    age_group = case_when(
-      grepl("0_19", variable)  ~ "0-19",
-      grepl("20_29", variable) ~ "20-29",
-      grepl("30_59", variable) ~ "30-59",
-      grepl("60p", variable)   ~ "60+"),
-    age_group = factor(age_group, levels = c("0-19", "20-29", "30-59", "60+")))
-
+  mutate(year = ifelse(grepl("2010", variable), "2010", "2020"),
+         age_group = case_when(grepl("0_19", variable) ~ "0-19", grepl("20_29", variable) ~ "20-29",
+                               grepl("30_59", variable) ~ "30-59", grepl("60p", variable) ~ "60+"),
+         age_group = factor(age_group, levels = c("0-19", "20-29", "30-59", "60+")))
 ggplot(age_by_hu_long, aes(x = hu_growth_q, y = value, fill = age_group)) +
-  geom_col(position = "stack", width = 0.7) +
-  scale_fill_brewer(palette = "Blues", name = "Age group") +
+  geom_col(position = "stack", width = 0.7) + scale_fill_brewer(palette = "Blues", name = "Age group") +
   facet_wrap(~ year) +
-  labs(title = "Age Composition of Housing Growth Quartiles",
-       x = "Housing growth quartile (ΔHU)", y = "Mean % of tract population") +
+  labs(title = "Age Composition of Housing Growth Quartiles", x = "Housing growth quartile (ΔHU)", y = "Mean % of tract population") +
   theme_lambert + theme(axis.text.x = element_text(angle = 15, hjust = 1))
 ```
 
@@ -452,301 +346,302 @@ ggplot(age_by_hu_long, aes(x = hu_growth_q, y = value, fill = age_group)) +
 ```{r echo=FALSE}
 race_pct_2010_cols <- paste0("pct_", race_labels, "_2010")
 race_pct_2020_cols <- paste0("pct_", race_labels, "_2020")
-race_delta_cols    <- paste0("delta_pct_", race_labels)
-
+race_delta_cols <- paste0("delta_pct_", race_labels)
 cor_vars <- c(race_pct_2010_cols, race_pct_2020_cols, race_delta_cols,
               "pct_0_19_2010","pct_20_29_2010","pct_30_59_2010","pct_60p_2010",
               "pct_0_19_2020","pct_20_29_2020","pct_30_59_2020","pct_60p_2020",
-              "delta_pct_0_19","delta_pct_20_29","delta_pct_30_59","delta_pct_60p",
-              "delta_chi_age","delta_chi_race")
-
-hu_cors <- sapply(cor_vars, function(v) {
-  cor(tract_housing$delta_HU, tract_housing[[v]], use = "complete.obs")
-})
-
-knitr::kable(data.frame(variable = names(hu_cors), r_dHU = round(hu_cors, 3)),
-             row.names = FALSE)
+              "delta_pct_0_19","delta_pct_20_29","delta_pct_30_59","delta_pct_60p")
+hu_cors <- sapply(cor_vars, function(v) cor(tract_housing$delta_HU, tract_housing[[v]], use = "complete.obs"))
+knitr::kable(data.frame(variable = names(hu_cors), r_dHU = round(hu_cors, 3)), row.names = FALSE)
 ```
+
+The correlation table confirms the quartile patterns. The strongest demographic predictor of housing growth is the 20–29 age share (r = 0.40 in 2010, r = 0.48 in 2020), followed by the change in 20–29 share (r = 0.38) and the change in Asian share (r = 0.36). Housing growth is negatively correlated with the 60+ share (r = −0.27 in 2020) and with the change in 60+ share (r = −0.36). 
 
 ---
 
 
 ## Part III: Who Is Experiencing Changes in Exposure to Green Environments?
 
+We stratify greenness outcomes by the demographic composition of the tract to answer: are particular populations disproportionately exposed to greenness loss? We use 2020 demographics (who lives there when the change is realized) as the primary stratifier and use White as an example to test.
+
 ```{r echo=FALSE}
 analysis_demo <- analysis_demo %>%
-  mutate(
-    white_tercile_2020 = cut(pct_White_2020,
-      breaks = quantile(pct_White_2020, probs = c(0, 1/3, 2/3, 1), na.rm = TRUE),
-      labels = c("Low White", "Mid White", "High White"),
-      include.lowest = TRUE),
+  mutate(white_tercile_2020 = cut(pct_White_2020,
+    breaks = quantile(pct_White_2020, probs = c(0, 1/3, 2/3, 1), na.rm = TRUE),
+    labels = c("Low White", "Mid White", "High White"), include.lowest = TRUE),
     pct_60p_tercile_2020 = cut(pct_60p_2020,
-      breaks = quantile(pct_60p_2020, probs = c(0, 1/3, 2/3, 1), na.rm = TRUE),
-      labels = c("Low 60+", "Mid 60+", "High 60+"),
-      include.lowest = TRUE)
-  )
+    breaks = quantile(pct_60p_2020, probs = c(0, 1/3, 2/3, 1), na.rm = TRUE),
+    labels = c("Low 60+", "Mid 60+", "High 60+"), include.lowest = TRUE))
 ```
 
 ### Table 7 — ΔGHI by % White tercile (2020)
 
 ```{r echo=FALSE}
-dghi_by_white <- analysis_demo %>%
-  filter(!is.na(white_tercile_2020)) %>%
+dghi_by_white <- analysis_demo %>% filter(!is.na(white_tercile_2020)) %>%
   group_by(scenario, white_tercile_2020) %>%
-  summarise(n = n(), mean_DGHI = mean(change_green, na.rm = TRUE),
-            sd = sd(change_green, na.rm = TRUE),
-            median = median(change_green, na.rm = TRUE),
-            pct_bright = mean(change_green > 0, na.rm = TRUE) * 100,
-            mean_pct_White = mean(pct_White_2020, na.rm = TRUE),
-            mean_NDVI_2010 = mean(NDVI_2010, na.rm = TRUE),
-            mean_NDVI_2020 = mean(NDVI_2020, na.rm = TRUE),
-            mean_dNDVI = mean(delta_NDVI, na.rm = TRUE),
-            .groups = "drop")
-
+  summarise(n = n(), mean_DGHI = mean(change_green, na.rm=TRUE), sd = sd(change_green, na.rm=TRUE),
+            median = median(change_green, na.rm=TRUE), pct_bright = mean(change_green > 0, na.rm=TRUE)*100,
+            mean_pct_White = mean(pct_White_2020, na.rm=TRUE),
+            mean_NDVI_2010 = mean(NDVI_2010, na.rm=TRUE), mean_NDVI_2020 = mean(NDVI_2020, na.rm=TRUE),
+            mean_dNDVI = mean(delta_NDVI, na.rm=TRUE), .groups = "drop")
 knitr::kable(dghi_by_white, digits = 3)
 ```
 
-### Figure — ΔGHI by % White tercile
 
 ```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=5}
-analysis_demo %>%
-  filter(!is.na(white_tercile_2020)) %>%
+analysis_demo %>% filter(!is.na(white_tercile_2020)) %>%
   ggplot(aes(x = white_tercile_2020, y = change_green, fill = white_tercile_2020)) +
   geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
   geom_boxplot(outlier.size = 0.4, outlier.alpha = 0.4, width = 0.6) +
-  scale_fill_manual(values = c("Low White" = "#e34a33", "Mid White" = "#fdbb84",
-                                "High White" = "#fee8c8"), guide = "none") +
+  scale_fill_manual(values = c("Low White" = "#e34a33", "Mid White" = "#fdbb84", "High White" = "#fee8c8"), guide = "none") +
   facet_wrap(~ scenario) +
-  labs(title = "Greenness Change by Tract % White (2020)",
-       x = "% White tercile (2020)", y = "ΔGHI") +
-  theme_lambert
+  labs(title = "Greenness Change by Tract % White (2020)", x = "% White tercile (2020)", y = "ΔGHI") + theme_lambert
 ```
 
-### Table 8 — ΔGHI by % 60+ tercile (2020)
-
-```{r echo=FALSE}
-dghi_by_60p <- analysis_demo %>%
-  filter(!is.na(pct_60p_tercile_2020)) %>%
-  group_by(scenario, pct_60p_tercile_2020) %>%
-  summarise(n = n(), mean_DGHI = mean(change_green, na.rm = TRUE),
-            sd = sd(change_green, na.rm = TRUE),
-            median = median(change_green, na.rm = TRUE),
-            pct_bright = mean(change_green > 0, na.rm = TRUE) * 100,
-            mean_pct_60p = mean(pct_60p_2020, na.rm = TRUE),
-            mean_NDVI_2010 = mean(NDVI_2010, na.rm = TRUE),
-            mean_NDVI_2020 = mean(NDVI_2020, na.rm = TRUE),
-            mean_dNDVI = mean(delta_NDVI, na.rm = TRUE),
-            .groups = "drop")
-
-knitr::kable(dghi_by_60p, digits = 3)
-```
-
-### Figure — ΔGHI by % 60+ tercile
-
-```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=5}
-analysis_demo %>%
-  filter(!is.na(pct_60p_tercile_2020)) %>%
-  ggplot(aes(x = pct_60p_tercile_2020, y = change_green, fill = pct_60p_tercile_2020)) +
-  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
-  geom_boxplot(outlier.size = 0.4, outlier.alpha = 0.4, width = 0.6) +
-  scale_fill_manual(values = c("Low 60+" = "#deebf7", "Mid 60+" = "#9ecae1",
-                                "High 60+" = "#3182bd"), guide = "none") +
-  facet_wrap(~ scenario) +
-  labs(title = "Greenness Change by Tract % Aged 60+ (2020)",
-       x = "% 60+ tercile (2020)", y = "ΔGHI") +
-  theme_lambert
-```
 
 ### Table 9 — Bright/Dim transitions by % White tercile
 
 ```{r echo=FALSE}
-trans_by_white <- analysis_demo %>%
-  filter(!is.na(white_tercile_2020)) %>%
+trans_by_white <- analysis_demo %>% filter(!is.na(white_tercile_2020)) %>%
   group_by(scenario, white_tercile_2020, transition_green) %>%
   summarise(n = n(), .groups = "drop") %>%
-  group_by(scenario, white_tercile_2020) %>%
-  mutate(pct = n / sum(n) * 100) %>% ungroup()
-
-knitr::kable(trans_by_white %>%
-  select(scenario, white_tercile_2020, transition_green, n, pct) %>%
+  group_by(scenario, white_tercile_2020) %>% mutate(pct = n / sum(n) * 100) %>% ungroup()
+knitr::kable(trans_by_white %>% select(scenario, white_tercile_2020, transition_green, n, pct) %>%
   arrange(scenario, white_tercile_2020, transition_green), digits = 1)
 ```
 
-### Table 10 — NDVI levels & housing by % White tercile
+
+### Table 10 — NDVI levels and housing by % White tercile
 
 ```{r echo=FALSE}
-ndvi_by_white <- analysis_demo %>%
-  filter(!is.na(white_tercile_2020)) %>%
+ndvi_by_white <- analysis_demo %>% filter(!is.na(white_tercile_2020)) %>%
   group_by(scenario, white_tercile_2020) %>%
-  summarise(n = n(),
-            mean_NDVI_2010 = mean(NDVI_2010, na.rm = TRUE),
-            mean_NDVI_2020 = mean(NDVI_2020, na.rm = TRUE),
-            mean_dNDVI = mean(delta_NDVI, na.rm = TRUE),
-            mean_HU_dens_2010 = mean(HU_density_2010, na.rm = TRUE),
-            mean_HU_dens_2020 = mean(HU_density_2020, na.rm = TRUE),
-            mean_dHU = mean(delta_HU, na.rm = TRUE),
-            .groups = "drop")
-
+  summarise(n = n(), mean_NDVI_2010 = mean(NDVI_2010, na.rm=TRUE),
+            mean_NDVI_2020 = mean(NDVI_2020, na.rm=TRUE), mean_dNDVI = mean(delta_NDVI, na.rm=TRUE),
+            mean_HU_dens_2010 = mean(HU_density_2010, na.rm=TRUE),
+            mean_HU_dens_2020 = mean(HU_density_2020, na.rm=TRUE),
+            mean_dHU = mean(delta_HU, na.rm=TRUE), .groups = "drop")
 knitr::kable(ndvi_by_white, digits = 3)
 ```
 
-### Figure — Baseline NDVI (2010) by % White tercile
 
 ```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=5}
-analysis_demo %>%
-  filter(!is.na(white_tercile_2020)) %>%
+analysis_demo %>% filter(!is.na(white_tercile_2020)) %>%
   ggplot(aes(x = white_tercile_2020, y = NDVI_2010, fill = white_tercile_2020)) +
   geom_boxplot(outlier.size = 0.4, outlier.alpha = 0.4, width = 0.6) +
-  scale_fill_manual(values = c("Low White" = "#e34a33", "Mid White" = "#fdbb84",
-                                "High White" = "#fee8c8"), guide = "none") +
+  scale_fill_manual(values = c("Low White" = "#e34a33", "Mid White" = "#fdbb84", "High White" = "#fee8c8"), guide = "none") +
   facet_wrap(~ scenario) +
-  labs(title = "Baseline Greenness (2010) by Tract % White",
-       x = "% White tercile (2020)", y = "NDVI, 2010") +
-  theme_lambert
+  labs(title = "Baseline Greenness (2010) by Tract % White", x = "% White tercile (2020)", y = "NDVI, 2010") + theme_lambert
 ```
 
-### Figure — Housing growth vs. ΔGHI by % White tercile
-
 ```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=5}
-analysis_demo %>%
-  filter(!is.na(white_tercile_2020)) %>%
+analysis_demo %>% filter(!is.na(white_tercile_2020)) %>%
   ggplot(aes(x = delta_HU, y = change_green, color = white_tercile_2020)) +
   geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
   geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
   geom_point(alpha = 0.4, size = 0.8) +
   geom_smooth(method = "lm", se = FALSE, linewidth = 0.7) +
-  scale_color_manual(values = c("Low White" = "#e34a33", "Mid White" = "#fdbb84",
-                                 "High White" = "#fee8c8"),
-                     name = "% White tercile") +
+  scale_color_manual(values = c("Low White" = "#e34a33", "Mid White" = "#fdbb84", "High White" = "#fee8c8"), name = "% White tercile") +
   facet_wrap(~ scenario) +
-  labs(title = "Housing Growth vs. Greenness Change, by % White",
-       x = "ΔHU (2010-2020)", y = "ΔGHI") +
-  theme_lambert
+  labs(title = "Housing Growth vs. Greenness Change, by % White", x = "ΔHU (2010-2020)", y = "ΔGHI") + theme_lambert
 ```
 
 
 ### Table 11 — ΔGHI correlations with all demographic variables
 
 ```{r echo=FALSE}
-cor_by_scenario <- analysis_demo %>%
-  group_by(scenario) %>%
-  summarise(
-    n = sum(!is.na(change_green)),
-    across(all_of(paste0("pct_", race_labels, "_2020")),
-           ~ cor(change_green, .x, use = "complete.obs"), .names = "cor_dGHI_{.col}"),
-    across(all_of(paste0("delta_pct_", race_labels)),
-           ~ cor(change_green, .x, use = "complete.obs"), .names = "cor_dGHI_{.col}"),
-    cor_dGHI_pct_0_19_2020  = cor(change_green, pct_0_19_2020, use = "complete.obs"),
+cor_by_scenario <- analysis_demo %>% group_by(scenario) %>%
+  summarise(n = sum(!is.na(change_green)),
+    across(all_of(paste0("pct_", race_labels, "_2020")), ~ cor(change_green, .x, use = "complete.obs"), .names = "cor_dGHI_{.col}"),
+    across(all_of(paste0("delta_pct_", race_labels)), ~ cor(change_green, .x, use = "complete.obs"), .names = "cor_dGHI_{.col}"),
+    cor_dGHI_pct_0_19_2020 = cor(change_green, pct_0_19_2020, use = "complete.obs"),
     cor_dGHI_pct_20_29_2020 = cor(change_green, pct_20_29_2020, use = "complete.obs"),
     cor_dGHI_pct_30_59_2020 = cor(change_green, pct_30_59_2020, use = "complete.obs"),
-    cor_dGHI_pct_60p_2020   = cor(change_green, pct_60p_2020, use = "complete.obs"),
-    cor_dGHI_delta_pct_0_19  = cor(change_green, delta_pct_0_19, use = "complete.obs"),
+    cor_dGHI_pct_60p_2020 = cor(change_green, pct_60p_2020, use = "complete.obs"),
+    cor_dGHI_delta_pct_0_19 = cor(change_green, delta_pct_0_19, use = "complete.obs"),
     cor_dGHI_delta_pct_20_29 = cor(change_green, delta_pct_20_29, use = "complete.obs"),
     cor_dGHI_delta_pct_30_59 = cor(change_green, delta_pct_30_59, use = "complete.obs"),
-    cor_dGHI_delta_pct_60p   = cor(change_green, delta_pct_60p, use = "complete.obs"),
-    cor_dGHI_dchi_age  = cor(change_green, delta_chi_age, use = "complete.obs"),
-    cor_dGHI_dchi_race = cor(change_green, delta_chi_race, use = "complete.obs"),
-    cor_dGHI_dHU  = cor(change_green, delta_HU, use = "complete.obs"),
-    cor_dGHI_dPOP = cor(change_green, delta_POP, use = "complete.obs"),
-    .groups = "drop")
+    cor_dGHI_delta_pct_60p = cor(change_green, delta_pct_60p, use = "complete.obs"),
+    cor_dGHI_dHU = cor(change_green, delta_HU, use = "complete.obs"),
+    cor_dGHI_dPOP = cor(change_green, delta_POP, use = "complete.obs"), .groups = "drop")
 
-# Transpose for readability
-cor_long <- cor_by_scenario %>%
-  select(-n) %>%
+cor_long <- cor_by_scenario %>% select(-n) %>%
   pivot_longer(-scenario, names_to = "variable", values_to = "r") %>%
   pivot_wider(names_from = scenario, values_from = r)
-
 knitr::kable(cor_long, digits = 3)
 ```
+
+
 
 ### Table 12 — Demographic summary (all WA tracts)
 
 ```{r echo=FALSE}
 demo_summary <- demo %>%
-  summarise(
-    n_tracts = n(),
-    across(all_of(c(paste0("pct_", race_labels, "_2010"),
-                    paste0("pct_", race_labels, "_2020"))),
-           ~ mean(.x, na.rm = TRUE), .names = "mean_{.col}"),
-    mean_pct_0_19_2010 = mean(pct_0_19_2010, na.rm = TRUE),
-    mean_pct_0_19_2020 = mean(pct_0_19_2020, na.rm = TRUE),
-    mean_pct_20_29_2010 = mean(pct_20_29_2010, na.rm = TRUE),
-    mean_pct_20_29_2020 = mean(pct_20_29_2020, na.rm = TRUE),
-    mean_pct_30_59_2010 = mean(pct_30_59_2010, na.rm = TRUE),
-    mean_pct_30_59_2020 = mean(pct_30_59_2020, na.rm = TRUE),
-    mean_pct_60p_2010 = mean(pct_60p_2010, na.rm = TRUE),
-    mean_pct_60p_2020 = mean(pct_60p_2020, na.rm = TRUE),
-    median_delta_chi_age = median(delta_chi_age, na.rm = TRUE),
-    median_delta_chi_race = median(delta_chi_race, na.rm = TRUE)
-  )
-
+  summarise(n_tracts = n(),
+    across(all_of(c(paste0("pct_", race_labels, "_2010"), paste0("pct_", race_labels, "_2020"))),
+           ~ mean(.x, na.rm=TRUE), .names = "mean_{.col}"),
+    mean_pct_0_19_2010 = mean(pct_0_19_2010, na.rm=TRUE), mean_pct_0_19_2020 = mean(pct_0_19_2020, na.rm=TRUE),
+    mean_pct_20_29_2010 = mean(pct_20_29_2010, na.rm=TRUE), mean_pct_20_29_2020 = mean(pct_20_29_2020, na.rm=TRUE),
+    mean_pct_30_59_2010 = mean(pct_30_59_2010, na.rm=TRUE), mean_pct_30_59_2020 = mean(pct_30_59_2020, na.rm=TRUE),
+    mean_pct_60p_2010 = mean(pct_60p_2010, na.rm=TRUE), mean_pct_60p_2020 = mean(pct_60p_2020, na.rm=TRUE))
 knitr::kable(t(demo_summary), col.names = "Value", digits = 2)
 ```
 
-### Figure — Race composition change vs. Δχ² (Race)
+
+### Race composition (2020) vs. greenness change
 
 ```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=12}
-race_delta_long <- analysis_demo %>%
-  select(tract, scenario, change_green, delta_chi_race,
-         all_of(paste0("delta_pct_", race_labels))) %>%
-  pivot_longer(cols = starts_with("delta_pct_"),
-               names_to = "y_var", values_to = "y_value") %>%
-  mutate(y_var = gsub("delta_pct_", "Δ % ", y_var),
-         y_var = gsub("_", " ", y_var))
+# Pivot race % 2020 to long format
+race_pct_long <- analysis_demo %>%
+  select(tract, scenario, change_green, delta_NDVI,
+         all_of(paste0("pct_", race_labels, "_2020"))) %>%
+  pivot_longer(cols = starts_with("pct_"),
+               names_to = "race", values_to = "pct_2020") %>%
+  mutate(race = gsub("pct_(.+)_2020", "\\1", race),
+         race = gsub("_", " ", race))
 
-ggplot(race_delta_long, aes(x = delta_chi_race, y = y_value)) +
-  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
-  geom_point(aes(color = change_green), alpha = 0.5, size = 0.6) +
-  geom_smooth(method = "lm", se = TRUE, color = "black", linewidth = 0.5) +
-  scale_color_gradient2(low = "#878787", mid = "grey90", high = "#fdae61",
-                        midpoint = 0, name = "ΔGHI") +
-  facet_grid(y_var ~ scenario, scales = "free_y") +
-  labs(title = "Race Composition Change vs. Δχ² (Race)",
-       x = expression(Delta ~ chi[Race]^2), y = "Δ (race %)") +
-  theme_lambert + theme(strip.text.y = element_text(size = 8))
+ggplot(race_pct_long, aes(x = change_green, y = pct_2020)) +
+  geom_point(alpha = 0.3, size = 0.5, color = "grey40") +
+  geom_smooth(method = "lm", se = TRUE, color = "#2c7bb6", linewidth = 0.6) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  facet_grid(race ~ scenario, scales = "free_y") +
+  labs(title = "Race Composition (2020) vs. ΔGHI",
+       subtitle = "Each row is a race category; each column is a season",
+       x = "ΔGHI (pseudo-residual change)",
+       y = "% of tract population (2020)") +
+  theme_lambert +
+  theme(strip.text.y = element_text(size = 9))
 ```
 
-### Figure — Age composition change vs. Δχ² (Age)
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=12}
+ggplot(race_pct_long, aes(x = delta_NDVI, y = pct_2020)) +
+  geom_point(alpha = 0.3, size = 0.5, color = "grey40") +
+  geom_smooth(method = "lm", se = TRUE, color = "#d95f02", linewidth = 0.6) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  facet_grid(race ~ scenario, scales = "free_y") +
+  labs(title = "Race Composition (2020) vs. ΔNDVI",
+       subtitle = "Each row is a race category; each column is a season",
+       x = "ΔNDVI (raw NDVI change, 2010–2020)",
+       y = "% of tract population (2020)") +
+  theme_lambert +
+  theme(strip.text.y = element_text(size = 9))
+```
+
+### Age composition (2020) vs. greenness change
 
 ```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=8}
-age_delta_long <- analysis_demo %>%
-  select(tract, scenario, change_green, delta_chi_age,
-         delta_pct_0_19, delta_pct_20_29, delta_pct_30_59, delta_pct_60p) %>%
-  pivot_longer(cols = starts_with("delta_pct_"),
-               names_to = "y_var", values_to = "y_value") %>%
-  mutate(y_var = recode(y_var,
-    delta_pct_0_19 = "Δ % 0-19", delta_pct_20_29 = "Δ % 20-29",
-    delta_pct_30_59 = "Δ % 30-59", delta_pct_60p = "Δ % 60+"))
+age_pct_long <- analysis_demo %>%
+  select(tract, scenario, change_green, delta_NDVI,
+         pct_0_19_2020, pct_20_29_2020, pct_30_59_2020, pct_60p_2020) %>%
+  pivot_longer(cols = starts_with("pct_"),
+               names_to = "age_group", values_to = "pct_2020") %>%
+  mutate(age_group = recode(age_group,
+    pct_0_19_2020 = "0-19", pct_20_29_2020 = "20-29",
+    pct_30_59_2020 = "30-59", pct_60p_2020 = "60+"),
+    age_group = factor(age_group, levels = c("0-19", "20-29", "30-59", "60+")))
 
-ggplot(age_delta_long, aes(x = delta_chi_age, y = y_value)) +
-  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
-  geom_point(aes(color = change_green), alpha = 0.5, size = 0.6) +
-  geom_smooth(method = "lm", se = TRUE, color = "black", linewidth = 0.5) +
-  scale_color_gradient2(low = "#878787", mid = "grey90", high = "#fdae61",
-                        midpoint = 0, name = "ΔGHI") +
-  facet_grid(y_var ~ scenario, scales = "free_y") +
-  labs(title = "Age Composition Change vs. Δχ² (Age)",
-       x = expression(Delta ~ chi[Age]^2), y = "Δ (age group %)") +
+ggplot(age_pct_long, aes(x = change_green, y = pct_2020)) +
+  geom_point(alpha = 0.3, size = 0.5, color = "grey40") +
+  geom_smooth(method = "lm", se = TRUE, color = "#2c7bb6", linewidth = 0.6) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  facet_grid(age_group ~ scenario, scales = "free_y") +
+  labs(title = "Age Composition (2020) vs. ΔGHI",
+       subtitle = "Each row is an age group; each column is a season",
+       x = "ΔGHI (pseudo-residual change)",
+       y = "% of tract population (2020)") +
   theme_lambert
 ```
 
-### Figure — ΔGHI vs. Δχ²
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+ggplot(age_pct_long, aes(x = delta_NDVI, y = pct_2020)) +
+  geom_point(alpha = 0.3, size = 0.5, color = "grey40") +
+  geom_smooth(method = "lm", se = TRUE, color = "#d95f02", linewidth = 0.6) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  facet_grid(age_group ~ scenario, scales = "free_y") +
+  labs(title = "Age Composition (2020) vs. ΔNDVI",
+       subtitle = "Each row is an age group; each column is a season",
+       x = "ΔNDVI (raw NDVI change, 2010–2020)",
+       y = "% of tract population (2020)") +
+  theme_lambert
+```
 
-```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=6}
-chi_long <- analysis_demo %>%
-  select(tract, scenario, change_green, delta_chi_age, delta_chi_race) %>%
-  pivot_longer(cols = c(delta_chi_age, delta_chi_race),
-               names_to = "chi_var", values_to = "chi_value") %>%
-  mutate(chi_var = recode(chi_var,
-    delta_chi_age = "Δχ² (Age)", delta_chi_race = "Δχ² (Race)"))
+### Change in race composition vs. greenness change
 
-ggplot(chi_long, aes(x = chi_value, y = change_green)) +
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=12}
+race_delta_long <- analysis_demo %>%
+  select(tract, scenario, change_green, delta_NDVI,
+         all_of(paste0("delta_pct_", race_labels))) %>%
+  pivot_longer(cols = starts_with("delta_pct_"),
+               names_to = "race", values_to = "delta_pct") %>%
+  mutate(race = gsub("delta_pct_", "", race),
+         race = gsub("_", " ", race))
+
+ggplot(race_delta_long, aes(x = change_green, y = delta_pct)) +
+  geom_point(alpha = 0.3, size = 0.5, color = "grey40") +
+  geom_smooth(method = "lm", se = TRUE, color = "#2c7bb6", linewidth = 0.6) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
   geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
-  geom_point(alpha = 0.4, size = 0.7, color = "#2c7bb6") +
-  geom_smooth(method = "lm", se = TRUE, color = "black", linewidth = 0.6) +
-  facet_grid(scenario ~ chi_var, scales = "free_x") +
-  labs(title = "ΔGHI vs. Demographic Δχ²",
-       x = "Δχ²", y = expression(Delta ~ "GHI")) +
+  facet_grid(race ~ scenario, scales = "free_y") +
+  labs(title = "Change in Race Composition vs. ΔGHI",
+       subtitle = "Each row is a race category; each column is a season",
+       x = "ΔGHI (pseudo-residual change)",
+       y = "Δ % of tract population (2010–2020)") +
+  theme_lambert +
+  theme(strip.text.y = element_text(size = 9))
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=12}
+ggplot(race_delta_long, aes(x = delta_NDVI, y = delta_pct)) +
+  geom_point(alpha = 0.3, size = 0.5, color = "grey40") +
+  geom_smooth(method = "lm", se = TRUE, color = "#d95f02", linewidth = 0.6) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  facet_grid(race ~ scenario, scales = "free_y") +
+  labs(title = "Change in Race Composition vs. ΔNDVI",
+       subtitle = "Each row is a race category; each column is a season",
+       x = "ΔNDVI (raw NDVI change, 2010–2020)",
+       y = "Δ % of tract population (2010–2020)") +
+  theme_lambert +
+  theme(strip.text.y = element_text(size = 9))
+```
+
+### Change in age composition vs. greenness change
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+age_delta_long <- analysis_demo %>%
+  select(tract, scenario, change_green, delta_NDVI,
+         delta_pct_0_19, delta_pct_20_29, delta_pct_30_59, delta_pct_60p) %>%
+  pivot_longer(cols = starts_with("delta_pct_"),
+               names_to = "age_group", values_to = "delta_pct") %>%
+  mutate(age_group = recode(age_group,
+    delta_pct_0_19 = "0-19", delta_pct_20_29 = "20-29",
+    delta_pct_30_59 = "30-59", delta_pct_60p = "60+"),
+    age_group = factor(age_group, levels = c("0-19", "20-29", "30-59", "60+")))
+
+ggplot(age_delta_long, aes(x = change_green, y = delta_pct)) +
+  geom_point(alpha = 0.3, size = 0.5, color = "grey40") +
+  geom_smooth(method = "lm", se = TRUE, color = "#2c7bb6", linewidth = 0.6) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  facet_grid(age_group ~ scenario, scales = "free_y") +
+  labs(title = "Change in Age Composition vs. ΔGHI",
+       subtitle = "Each row is an age group; each column is a season",
+       x = "ΔGHI (pseudo-residual change)",
+       y = "Δ % of tract population (2010–2020)") +
+  theme_lambert
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+ggplot(age_delta_long, aes(x = delta_NDVI, y = delta_pct)) +
+  geom_point(alpha = 0.3, size = 0.5, color = "grey40") +
+  geom_smooth(method = "lm", se = TRUE, color = "#d95f02", linewidth = 0.6) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  facet_grid(age_group ~ scenario, scales = "free_y") +
+  labs(title = "Change in Age Composition vs. ΔNDVI",
+       subtitle = "Each row is an age group; each column is a season",
+       x = "ΔNDVI (raw NDVI change, 2010–2020)",
+       y = "Δ % of tract population (2010–2020)") +
   theme_lambert
 ```
 

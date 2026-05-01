@@ -123,7 +123,7 @@ Sample after filtering (NDVI present, HU_density > 0, both years present): **2,6
 
 ### Table 1 — 2010 baseline regressions
 
-```{r}
+```{r echo=FALSE}
 # ============================================================
 # 5. FIT 2010 BASELINE REGRESSIONS
 # ============================================================
@@ -215,9 +215,7 @@ change_summary <- all_data %>%
     .groups = "drop"
   )
 
-cat("\n================================================================\n")
 cat("TABLE 2: Tract-Level Greenness Change Summary by Scenario\n")
-cat("================================================================\n")
 print(as.data.frame(change_summary), digits = 4, row.names = FALSE)
 ```
 
@@ -242,9 +240,7 @@ transition_green <- all_data %>%
   summarise(n = n(), .groups = "drop") %>%
   pivot_wider(names_from = transition_green, values_from = n, values_fill = 0)
 
-cat("\n================================================================\n")
 cat("TABLE 3: Greenness Bright/Dim Transitions (2010 -> 2020)\n")
-cat("================================================================\n")
 print(as.data.frame(transition_green), row.names = FALSE)
 ```
 
@@ -288,8 +284,8 @@ This section directly addresses the first guiding question. The previous version
 # 9. DEMOGRAPHIC CHANGE: RACE & AGE
 # ============================================================
 
-age  <- read.csv(here::here("data", "age_10_20.csv"))
-race <- read.csv(here::here("data", "race_10_20.csv"))
+age  <- read.csv(here::here("data", "age", "age_10_20.csv"))
+race <- read.csv(here::here("data", "race", "race_10_20.csv"))
 
 # Normalize tract ID for joins (strip anything non-numeric)
 age$tract  <- as.numeric(gsub("[^0-9]", "", as.character(age$tract20l)))
@@ -363,8 +359,8 @@ race_out <- data.frame(
   tract             = race$tract,
   total_race_2010   = T10,
   total_race_2020   = T20,
-  pct_white_2010    = P10[, "White"] * 100,
-  pct_white_2020    = P20[, "White"] * 100,
+  pct_white_2010    = P10[, "White2010"] * 100,
+  pct_white_2020    = P20[, "White2020"] * 100,
   delta_chi_race    = rowSums(ratio_race, na.rm = TRUE)
 )
 race_out$pct_non_white_2010 <- 100 - race_out$pct_white_2010
@@ -396,7 +392,7 @@ analysis_demo <- all_data %>%
 
 ### Table 4 — Housing growth summary (all tracts in the analytical sample)
 
-```{r}
+```{r echo=FALSE}
 # --- TABLE 4: Housing growth summary (all tracts) ---
 # Use one row per tract (take from the dormant scenario since
 # HU/POP are the same across seasons)
@@ -498,11 +494,9 @@ demo_by_hu_growth <- tract_housing %>%
     .groups = "drop"
   )
 
-cat("\n================================================================\n")
-cat("TABLE 5: Demographics by Housing Growth Quartile\n")
-cat("  (Who lives where housing is being built?)\n")
-cat("================================================================\n")
-print(as.data.frame(demo_by_hu_growth), digits = 3, row.names = FALSE)
+# cat("TABLE 5: Demographics by Housing Growth Quartile\n")
+# cat("  (Who lives where housing is being built?)\n")
+# print(as.data.frame(demo_by_hu_growth), digits = 3, row.names = FALSE)
 ```
 
 Tracts are divided into quartiles by ΔHU (housing units gained, 2010–2020). For each quartile, we report who lives there in 2020, who lived there in 2010, and how demographics changed.

@@ -1,0 +1,396 @@
+---
+title: "Block-Level Greenness and Housing Density Change, 2010–2020"
+author: "Lilac Hong"
+date: "2026-04-30"
+output: 
+  html_document:
+    toc: yes
+    toc_float:
+      collapsed: true
+---
+
+```{r include = FALSE, message=FALSE, warning=FALSE}
+library(here)
+library(tidyverse)
+library(ggplot2)
+
+here::i_am("code/1_2_block_ndvi1.Rmd")
+```
+
+## Research question
+
+**Is housing development adversely affecting exposure to green environments?**
+
+We address this using the pseudo-residual change framework from Lambert et al. (2025), which asks: *given how much a block's housing density changed between 2010 and 2020, did its greenness change more or less than expected?*
+
+
+## Methods
+
+### Analytical framework
+
+We regress 2010 NDVI on log(housing unit density) to establish a baseline greenness–housing relationship. The 2010 residual is the **greenness:housing index** (GHI) — positive means greener than expected for a block's density ("Bright"), negative means less green ("Dim"). We then apply the *same 2010 coefficients* to 2020 housing density to generate expected 2020 NDVI, and compute a 2020 pseudo-residual. The change ΔGHI = GHI~2020~ − GHI~2010~ captures whether a block **brightened** (became greener than expected) or **dimmed** (became less green than expected) after accounting for its housing density trajectory.
+
+### Baseline regressions (2010)
+
+For each retained scenario we fit:
+
+$$\text{NDVI}_{2010} = \alpha + \beta \cdot \log(\text{HU_density}_{2010})$$
+
+Housing unit densities of zero were replaced with a small positive value (1 × 10^−10^) prior to log transformation. After scenario comparison (see supplemental `1_1_block_ndvi_scenario_comparison`), we retained **4 of 6 scenarios**: Dormant × 1000 m, and Growing × {500, 1000, 2000 m}. Season differences are large (Cohen's d > 1); dormant-season buffer differences are negligible; growing-season buffers are retained for sensitivity.
+
+**Important caveat on baseline R².** The 2010 R² is ≤ 0.031 in every scenario — housing density alone explains very little of the spatial variation in NDVI at the block level. This means the pseudo-residual is dominated by factors *other* than housing (biophysical setting, canopy composition, land-use history). The framework is still useful because it adjusts for the *expected* greenness shift due to densification, but readers should understand that ΔGHI is close to raw ΔNDVI. The housing-density adjustment matters most for blocks that densified substantially.
+
+```{r echo=FALSE}
+# 1. READ & CLEAN
+ndvi_block2 <- read.csv(here::here("data", "block_final.csv"))
+
+df <- ndvi_block2 %>%
+  mutate(
+    across(all_of(c("NDVI", "HU_density")), as.numeric),
+    year   = as.integer(year),
+    buffer = as.integer(buffer)
+  ) %>%
+  filter(year %in% c(2010, 2020)) %>%
+  filter(!is.na(NDVI), !is.na(HU_density)) %>%
+  mutate(log_HU_density = log(pmax(HU_density, 1e-10)))
+
+# 3. PIVOT TO WIDE
+wide <- df %>%
+  select(GEOID20, season, buffer, year, log_HU_density, NDVI) %>%
+  pivot_wider(names_from  = year,
+              values_from = c(log_HU_density, NDVI),
+              names_sep   = "_") %>%
+  drop_na() %>%
+  mutate(delta_log_HU = log_HU_density_2020 - log_HU_density_2010,
+         delta_NDVI   = NDVI_2020 - NDVI_2010)
+
+# 4. RESTRICT TO UPDATED SCENARIO SET
+scenarios <- tibble::tribble(
+  ~season,           ~buffer,
+  "Dormant_Season",     1000,
+  "Growing_Season",      500,
+  "Growing_Season",     1000,
+  "Growing_Season",     2000
+)
+
+wide <- wide %>% semi_join(scenarios, by = c("season", "buffer"))
+```
+
+### Table 1: 2010 regression coefficients
+
+```{r echo=FALSE}
+# 5. FIT 2010 BASELINE REGRESSIONS
+results <- scenarios %>%
+  mutate(data = map2(season, buffer, ~ wide %>%
+                       filter(season == .x, buffer == .y))) %>%
+  mutate(mod_green = map(data, ~ lm(NDVI_2010 ~ log_HU_density_2010, data = .x)))
+
+reg_table <- results %>%
+  mutate(
+    tidy_green = map(mod_green, ~ {
+      s <- summary(.x)
+      tibble(
+        intercept = coef(.x)[1],
+        slope     = coef(.x)[2],
+        slope_se  = coef(s)[2, 2],
+        slope_p   = coef(s)[2, 4],
+        R2        = s$r.squared,
+        n         = nobs(.x)
+      )
+    })
+  ) %>%
+  select(season, buffer, tidy_green) %>%
+  unnest(tidy_green)
+
+knitr::kable(reg_table, digits = c(NA, 0, 4, 6, 6, 4, 4, 0),
+             caption = "Table 1: 2010 OLS regression of NDVI on log(HU density)")
+```
+
+Slopes are small and positive (dormant) or near-zero (growing at 2000 m). R² is ≤ 0.031 everywhere — the baseline relationship is weak at the block level.
+
+
+### Residuals, pseudo-residuals, and change
+
+```{r echo=FALSE}
+# 6. COMPUTE RESIDUALS AND PSEUDO-RESIDUALS
+results <- results %>%
+  mutate(
+    data = map2(data, mod_green, function(d, mg) {
+      d %>%
+        mutate(
+          resid_green_2010 = NDVI_2010 - predict(mg, newdata = d),
+          pred_green_2020  = predict(mg, newdata = data.frame(
+            log_HU_density_2010 = d$log_HU_density_2020)),
+          resid_green_2020 = NDVI_2020 - pred_green_2020,
+          change_green     = resid_green_2020 - resid_green_2010
+        )
+    })
+  )
+
+all_data <- results %>%
+  select(data) %>%
+  unnest(data) %>%
+  mutate(
+    state_green_2010 = ifelse(resid_green_2010 >= 0, "Bright", "Dim"),
+    state_green_2020 = ifelse(resid_green_2020 >= 0, "Bright", "Dim"),
+    transition_green = paste0(state_green_2010, " -> ", state_green_2020),
+    direction_green  = case_when(
+      change_green > 0 ~ "Brightened",
+      change_green < 0 ~ "Dimmed",
+      TRUE ~ "No change"
+    ),
+    scenario = factor(
+      paste(ifelse(season == "Dormant_Season", "Dormant", "Growing"),
+            paste0(buffer, " m")),
+      levels = c("Dormant 1000 m", "Growing 500 m",
+                  "Growing 1000 m", "Growing 2000 m"))
+  )
+
+theme_lambert <- theme_minimal(base_size = 11) +
+  theme(strip.text       = element_text(face = "bold"),
+        panel.grid.minor = element_blank(),
+        legend.position  = "bottom")
+```
+
+- GHI~2010~ = NDVI~2010~ − ($\hat{\alpha}_{2010}$ +$\hat{\beta}_{2010}$ · log($\text{HU_density}_{2010}$))
+- GHI~2020~= NDVI~2020~ − ($\hat{\alpha}_{2010}$ +$\hat{\beta}_{2010}$ · log($\text{HU_density}_{2020}$)))
+- **ΔGHI = GHI~2020~ − GHI~2010~**
+
+Positive ΔGHI = **brightening** (greener than expected given housing trajectory). Negative = **dimming**.
+
+There are six possible transition × direction combinations:
+
+| GHI~2010~ | GHI~2020~ | ΔGHI | Interpretation |
+|---|---|---|---|
+| + (Bright) | + (Bright) | + (Brightened) | More bright |
+| + (Bright) | + (Bright) | − (Dimmed) | Still bright but declining |
+| + (Bright) | − (Dim) | − (Dimmed) | Bad transition |
+| − (Dim) | + (Bright) | + (Brightened) | Good transition |
+| − (Dim) | − (Dim) | + (Brightened) | Less dim |
+| − (Dim) | − (Dim) | − (Dimmed) | More dim |
+
+
+## Results
+
+### Statistical comparisons across season and buffer
+
+#### Paired t-test: Dormant vs. Growing at 1000 m
+
+```{r echo=FALSE}
+paired <- all_data %>%
+  filter(buffer == 1000) %>%
+  select(GEOID20, season, change_green) %>%
+  pivot_wider(names_from = season, values_from = change_green) %>%
+  drop_na()
+
+print(t.test(paired$Dormant_Season, paired$Growing_Season, paired = TRUE))
+```
+
+The paired t-test is highly significant (p < 2.2 × 10^−16^), confirming that dormant and growing seasons tell fundamentally different stories about greenness change.
+
+#### ANOVA and Tukey HSD: buffer within Growing Season
+
+```{r echo=FALSE}
+grow <- all_data %>% filter(season == "Growing_Season")
+grow$buffer_f <- factor(grow$buffer)
+aov_grow <- aov(change_green ~ buffer_f, data = grow)
+print(summary(aov_grow))
+cat("\nTukey HSD pairwise buffer comparisons (Growing Season):\n")
+print(TukeyHSD(aov_grow))
+```
+
+#### Cross-buffer ΔGHI correlation (Growing Season)
+
+```{r echo=FALSE}
+cross_buf <- grow %>%
+  select(GEOID20, buffer, change_green) %>%
+  pivot_wider(names_from = buffer, values_from = change_green,
+              names_prefix = "b") %>%
+  drop_na()
+
+knitr::kable(round(cor(cross_buf %>% select(-GEOID20)), 4),
+             caption = "Cross-buffer correlation of ΔGHI (Growing Season)")
+```
+
+
+### Change variable summaries (Table 2)
+
+```{r figure5, echo=FALSE, fig.width=8, fig.height=5}
+fig5 <- ggplot(all_data, aes(x = scenario, y = change_green, fill = scenario)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  geom_boxplot(outlier.size = 0.3, outlier.alpha = 0.2, width = 0.6) +
+  scale_fill_manual(values = c("Dormant 1000 m" = "#abd9e9",
+                                "Growing 500 m"  = "#c7e9c0",
+                                "Growing 1000 m" = "#66c164",
+                                "Growing 2000 m" = "#1a9641"),
+                    guide = "none") +
+  labs(title    = "Distribution of ΔGHI by Scenario",
+       subtitle = "Positive = brightening; Negative = dimming (relative to 2010 baseline)",
+       x = NULL, y = "ΔGHI (pseudo-residual change)") +
+  theme_lambert
+fig5
+```
+
+```{r echo=FALSE}
+change_summary <- all_data %>%
+  group_by(season, buffer) %>%
+  summarise(
+    n                    = n(),
+    mean_change_green    = mean(change_green),
+    sd_change_green      = sd(change_green),
+    median_change_green  = median(change_green),
+    pct_brightened_green = mean(change_green > 0) * 100,
+    pct_dimmed_green     = mean(change_green < 0) * 100,
+    .groups = "drop"
+  )
+
+knitr::kable(change_summary, digits = c(NA, 0, 0, 5, 5, 5, 1, 1),
+             caption = "Table 2: Greenness change summary by scenario")
+```
+
+The dormant season shows strong net dimming (mean ΔGHI ≈ −0.083; only ~22% of blocks brighten). The growing season shows mild net brightening (mean ΔGHI ≈ +0.006; ~65–68% brighten). This means that **structural/evergreen cover declined** (dormant dimming) while **active-season canopy held or slightly improved** (growing brightening).
+
+
+### Bright/Dim transitions (Table 3)
+
+```{r echo=FALSE}
+transition_green <- all_data %>%
+  group_by(season, buffer, transition_green) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  pivot_wider(names_from = transition_green, values_from = n, values_fill = 0)
+
+knitr::kable(transition_green,
+             caption = "Table 3: Greenness Bright/Dim transitions (2010 → 2020)")
+```
+
+In the dormant season, Bright → Dim transitions (20,106) outnumber Dim → Bright (2,674) by **7.5×** — a strong asymmetry indicating widespread loss of above-average greenness. In the growing season, transitions are roughly balanced (Bright → Dim ≈ 1,300–1,900 vs. Dim → Bright ≈ 2,600–3,700), consistent with the mild net brightening.
+
+
+### Does densification predict dimming? (Table 4)
+
+This is the central test for the research question. We regress ΔGHI on Δlog(HU density) within each scenario. A **negative slope** means blocks that densified more also dimmed more — i.e., housing development is associated with disproportionate greenness loss.
+
+```{r echo=FALSE}
+densification_reg <- all_data %>%
+  group_by(scenario) %>%
+  summarise(
+    n = n(),
+    slope = coef(lm(change_green ~ delta_log_HU))[2],
+    se    = summary(lm(change_green ~ delta_log_HU))$coefficients[2, 2],
+    p     = summary(lm(change_green ~ delta_log_HU))$coefficients[2, 4],
+    R2    = summary(lm(change_green ~ delta_log_HU))$r.squared,
+    .groups = "drop"
+  )
+
+knitr::kable(densification_reg, digits = c(NA, 0, 6, 6, 4, 6),
+             caption = "Table 4: ΔGHI ~ Δlog(HU density) regression by scenario")
+```
+
+**All four slopes are negative and highly significant (p < 10^−9^).** Blocks that densified more experienced greater greenness loss than expected. The effect is strongest in the growing season at 500 m (slope = −0.0023, R² = 0.089), meaning that a one-unit increase in log housing density is associated with a 0.0023-unit decline in the greenness index. The dormant-season effect is smaller (slope = −0.0016, R² = 0.005) but still significant.
+
+The R² values are small (0.04%–8.9%), which means densification explains only a modest fraction of the variation in ΔGHI. Many blocks dimmed or brightened for reasons unrelated to housing. But the direction is unambiguous: **on average, densification is associated with disproportionate greenness loss.**
+
+
+### Visualizing the densification–greenness link
+
+```{r figure2, echo=FALSE, fig.width=12, fig.height=4}
+fig2 <- ggplot(all_data,
+               aes(x = delta_log_HU, y = change_green)) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "black", linewidth = 0.4) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50", linewidth = 0.3) +
+  geom_point(aes(color = direction_green), alpha = 0.15, size = 0.5) +
+  geom_smooth(method = "lm", se = TRUE, color = "black", linewidth = 0.7) +
+  scale_color_manual(
+    values = c("Brightened" = "#fdae61", "Dimmed" = "#878787", "No change" = "grey50"),
+    name = "Direction") +
+  facet_wrap(~ scenario, nrow = 1) +
+  labs(title    = "Change in Greenness Index vs. Housing Density Change",
+       x = expression(Delta ~ "log(HU density/ha), 2020 - 2010"),
+       y = expression(Delta ~ "Greenness Index (ΔGHI)")) +
+  theme_lambert
+fig2
+```
+
+The downward-sloping OLS line in each panel confirms the negative association. The growing-season panels show a tighter relationship (steeper slope, more variance explained) than the dormant panel.
+
+```{r figure3, echo=FALSE, fig.width=12, fig.height=4}
+fig3 <- ggplot(all_data,
+               aes(x = delta_NDVI, y = change_green)) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "black", linewidth = 0.4) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50", linewidth = 0.3) +
+  geom_point(aes(color = direction_green), alpha = 0.15, size = 0.5) +
+  geom_smooth(method = "lm", se = TRUE, color = "black", linewidth = 0.7) +
+  scale_color_manual(
+    values = c("Brightened" = "#fdae61", "Dimmed" = "#878787", "No change" = "grey50"),
+    name = "Direction") +
+  facet_wrap(~ scenario, nrow = 1) +
+  labs(title    = "Change in Greenness Index vs. Raw NDVI Change",
+       x = expression(Delta ~ "NDVI, 2020 - 2010"),
+       y = expression(Delta ~ "Greenness Index (ΔGHI)")) +
+  theme_lambert
+fig3
+```
+
+
+### Connecting transitions to densification (Table 5)
+
+To test whether blocks that densified the most were disproportionately likely to lose their "Bright" status, we split blocks into densification quartiles (Q1 = least densification, Q4 = most) and compute the rate of Bright → Dim transitions among blocks that started Bright in 2010.
+
+```{r echo=FALSE}
+bright_2010 <- all_data %>%
+  filter(state_green_2010 == "Bright") %>%
+  mutate(went_dim = as.integer(state_green_2020 == "Dim"))
+
+bright_2010 <- bright_2010 %>%
+  group_by(scenario) %>%
+  mutate(dens_q = cut(delta_log_HU,
+                      breaks = quantile(delta_log_HU, probs = c(0, 0.25, 0.5, 0.75, 1),
+                                        na.rm = TRUE),
+                      labels = c("Q1 (least)", "Q2", "Q3", "Q4 (most)"),
+                      include.lowest = TRUE)) %>%
+  ungroup()
+
+transition_by_dens <- bright_2010 %>%
+  group_by(scenario, dens_q) %>%
+  summarise(
+    n_bright_2010 = n(),
+    n_went_dim    = sum(went_dim),
+    pct_went_dim  = mean(went_dim) * 100,
+    .groups = "drop"
+  )
+
+knitr::kable(transition_by_dens, digits = c(NA, NA, 0, 0, 1),
+             caption = "Table 5: P(Bright → Dim) by densification quartile, among blocks Bright in 2010")
+```
+
+**Dormant season:** The Bright → Dim rate is high across all quartiles (44–53%), reflecting the pervasive dormant dimming. The rate is slightly higher in Q2–Q3 than Q1 or Q4, suggesting a modest but non-monotonic relationship with densification.
+
+**Growing season:** The Bright → Dim rate is low overall (2–7%), but blocks in Q4 (most densification) consistently show the **highest** rate of Bright → Dim transitions — 7.2% at 500 m vs. 2.7% for Q1. This is a 2.7× relative risk increase. Blocks that densified the most were roughly 2–3 times as likely to lose their above-average greenness status in the growing season.
+
+
+## Discussion
+
+### Does housing development adversely affect greenness?
+
+**Yes, but the answer depends on what you measure and when.**
+
+1. **Dormant season (structural/evergreen cover):** Strong net dimming across all blocks (mean ΔGHI ≈ −0.08; 78% of blocks dimmed). This is not primarily driven by densification — the ΔGHI ~ Δlog(HU density) R² is only 0.5%, and the Bright → Dim rate is high regardless of densification quartile. Dormant-season greenness loss appears to be a statewide phenomenon driven by factors beyond housing development alone (e.g., drought, wildfire, disease, land-use change unrelated to housing).
+
+2. **Growing season (active canopy):** Mild net brightening on average (mean ΔGHI ≈ +0.006; ~66% of blocks brighten), but **densification is significantly associated with dimming**. The ΔGHI ~ Δlog(HU density) slope is −0.0023 at 500 m (R² = 8.9%, the strongest signal in the analysis). Blocks in the top densification quartile are 2–3× more likely to transition from Bright to Dim. So while most blocks maintained or gained growing-season greenness, the blocks that densified the most disproportionately lost it.
+
+3. **Scale matters.** The densification–dimming link is strongest at the 500 m buffer and weakens at 2000 m (slope drops from −0.0023 to −0.0001). This suggests that housing development's impact on greenness is a **local** phenomenon — detectable in the immediate neighborhood but diluted at broader spatial scales.
+
+### Limitations
+
+- **Low baseline R².** The pseudo-residual framework adjusts for the expected greenness–housing relationship, but that relationship is weak at the block level (R² ≤ 0.03). ΔGHI is therefore close to raw ΔNDVI. The framework adds most value for blocks with large housing density changes.
+- **Observational design.** The negative slope of ΔGHI on Δlog(HU density) is an association, not a causal estimate. Blocks that densified may differ from those that did not in ways that independently affect greenness (e.g., proximity to urban cores, zoning, pre-existing land cover).
+- **Temporal resolution.** Two time points (2010, 2020) cannot distinguish between gradual change and abrupt events (e.g., a wildfire followed by recovery).
+
+### Summary
+
+Housing development is associated with disproportionate greenness loss, but the effect is **seasonal, local, and modest in magnitude**. The growing-season signal is the clearest: blocks that densified the most were 2–3× more likely to lose above-average greenness, and the ΔGHI ~ Δlog(HU density) slope is consistently negative. The dormant-season signal is dominated by statewide structural greenness loss that is largely independent of densification. These findings are consistent with Lambert et al. (2025), who found that densification and tree cover loss are linked but that "win–win" outcomes (densification without greenness loss) are possible.
+
+
+## References
+
+Lambert, M. R., Des Roches, S., Auerbach, D. A., Van Deynze, B., Behrens, S., Hale, R., & Pierce, K. B. (2025). Building the neighborhood for the trees: Illuminating win–wins for housing densification and nature. *Conservation Science and Practice*, 7(7), e70085.

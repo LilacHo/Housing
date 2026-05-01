@@ -2,7 +2,7 @@ library(here)
 library(tidyverse)
 library(foreign)
 
-here::i_am("code/0_prepare_race.R")
+here::i_am("code/0_1_prepare_race.R")
 
 
 race2010 <- read.dbf(here::here("data", "race", "SADE2010_race.dbf"), as.is = TRUE)
